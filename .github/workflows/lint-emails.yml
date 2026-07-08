@@ -1,0 +1,24 @@
+name: Lint email literals
+
+# Rejects raw `local@domain.tld` literals anywhere in non-test *.go / *.json
+# source. Cloudflare's email-obfuscation pass silently rewrites any literal
+# matching the email regex into the placeholder "[email protected]" (no "@"),
+# which breaks downstream domain extraction and equality checks. The defense
+# is engine.MkEmail(local, domain) — see .plans/implement-notes.md.
+#
+# This CI runs on every push and pull_request so offenders can't silently land.
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  lint-email-literals:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Run email-literal lint
+        run: |
+          chmod +x ./scripts/lint-email-literals.sh
+          ./scripts/lint-email-literals.sh
