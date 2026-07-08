@@ -1,6 +1,8 @@
 package cli
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -430,15 +432,38 @@ func defaultCache() (string, error) {
 	return filepath.Join(home, ".config", "gclean", "undo-cache.json"), nil
 }
 
+const undoCacheVersion = 1
+
 type undoCache struct {
-	Records []storage.StoredMessage `json:"records"`
+	Version  int                     `json:"version"`
+	Checksum string                  `json:"checksum"`
+	Records  []storage.StoredMessage `json:"records"`
+}
+
+// checksumRecords hashes the canonical JSON of the records so a partial write
+// or external tampering is detected before the records are re-inserted.
+func checksumRecords(recs []storage.StoredMessage) (string, error) {
+	payload, err := json.Marshal(recs)
+	if err != nil {
+		return "", err
+	}
+	sum := sha256.Sum256(payload)
+	return hex.EncodeToString(sum[:]), nil
 }
 
 func saveTrashedForUndo(path string, recs []storage.StoredMessage) error {
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return err
 	}
-	b, _ := json.MarshalIndent(undoCache{Records: recs}, "", "  ")
+	sum, err := checksumRecords(recs)
+	if err != nil {
+		return err
+	}
+	c := undoCache{Version: undoCacheVersion, Checksum: sum, Records: recs}
+	b, err := json.MarshalIndent(c, "", "  ")
+	if err != nil {
+		return err
+	}
 	return os.WriteFile(path, b, 0o600)
 }
 
@@ -453,6 +478,22 @@ func loadTrashedForUndo(path string) ([]storage.StoredMessage, error) {
 	var c undoCache
 	if err := json.Unmarshal(data, &c); err != nil {
 		return nil, err
+	}
+	// Legacy caches (written before the integrity tag existed) carry no
+	// checksum; accept them for backward compatibility. Newer caches are
+	// verified so a corrupt or partially-written file is refused instead of
+	// re-upserting strange rows (CONCERNS.md #4).
+	if c.Checksum != "" {
+		if c.Version != undoCacheVersion {
+			return nil, fmt.Errorf("undo cache version %d unsupported (want %d)", c.Version, undoCacheVersion)
+		}
+		want, err := checksumRecords(c.Records)
+		if err != nil {
+			return nil, err
+		}
+		if want != c.Checksum {
+			return nil, errors.New("undo cache checksum mismatch: file may be corrupt or partially written")
+		}
 	}
 	return c.Records, nil
 }
