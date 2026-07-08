@@ -126,10 +126,11 @@ func newTuiCmd(out, errOut io.Writer) *cobra.Command {
 				return err
 			}
 			defer func() { _ = store.Close() }()
-			safeties, err := store.SenderSafety()
+			agg, err := store.Aggregations()
 			if err != nil {
 				return err
 			}
+			safeties := agg.SendersSafe
 			if len(safeties) == 0 {
 				_, _ = fmt.Fprintln(errOut, "store is empty \u2014 run `gclean scan --fixtures testdata/fixtures/messages.json` first.")
 				return errors.New("empty store")

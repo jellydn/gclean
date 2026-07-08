@@ -19,7 +19,7 @@ import (
 // one-to-one preview of the production shape.
 //
 // NOTE: This preview mirrors the TUI's per-sender shape, NOT `gclean sender`
-// (which uses `store.SendersByVolume` returning a simpler Email/Count/Bytes
+// (which uses `store.Aggregations().BySender` returning a simpler Email/Count/Bytes
 // struct). If a future contributor wants a `gclean sender` preview they
 // should add a separate subcommand or extend this one with view-mode flags.
 //
@@ -45,7 +45,7 @@ func newDemoCmd(out, errOut io.Writer) *cobra.Command {
 			"\nNo SQLite access, no Gmail auth, no fixtures file required.",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			// Every field populated so the demo row is structurally identical
-			// to what storage.SenderSafety() returns from SQLite. Reasons come
+			// to what storage.Aggregations().SendersSafe returns from SQLite. Reasons come
 			// from models.ReasonXxx so a contributor can grep demo.go against
 			// sendersafety.go to see the contract.
 			//

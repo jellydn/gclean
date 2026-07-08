@@ -81,9 +81,13 @@ func newSenderCmd(out, errOut io.Writer) *cobra.Command {
 				return err
 			}
 			defer func() { _ = store.Close() }()
-			senders, err := store.SendersByVolume(50)
+			agg, err := store.Aggregations()
 			if err != nil {
 				return err
+			}
+			senders := agg.BySender
+			if len(senders) > 50 {
+				senders = senders[:50]
 			}
 			filter := ""
 			if len(args) > 0 {

@@ -209,15 +209,11 @@ func newStatsCmd(out, errOut io.Writer) *cobra.Command {
 				return err
 			}
 			defer func() { _ = store.Close() }()
-			rep, err := store.Aggregate()
+			agg, err := store.Aggregations()
 			if err != nil {
 				return err
 			}
-			reclaim, err := store.PotentialReclaimOf(int(models.VerdictDelete))
-			if err != nil {
-				return err
-			}
-			rep.PotentialReclaim = reclaim
+			rep := agg.Report
 
 			tw := tabwriter.NewWriter(out, 0, 0, 2, ' ', 0)
 			_, _ = fmt.Fprintf(tw, "Total messages\t%d\n", rep.TotalMessages)

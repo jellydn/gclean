@@ -1,106 +1,154 @@
 package storage
 
 import (
+	"sort"
 	"strconv"
 
 	"gclean/internal/models"
 )
 
-// Aggregate computes the §5 StatsReport from the messages table.
-func (s *Store) Aggregate() (models.StatsReport, error) {
-	var r models.StatsReport
-	r.ByCategory = map[string]int64{}
-	r.ByYear = map[int]int64{}
+// Aggregations is the single source of truth for every messages-table rollup.
+// One full scan of the table produces the §5 StatsReport, the per-sender volume
+// ranking, and the per-sender safety split. Previously Aggregate,
+// SendersByVolume, and SenderSafety each scanned the table (two of them with
+// near-identical GROUP BY sender_email clauses); consolidating them here means
+// a schema change propagates to exactly one place and the ORDER BY magic-number
+// foot-guns are gone. CONCERNS.md #2-adjacent locality win.
+type Aggregations struct {
+	Report      models.StatsReport
+	BySender    []models.SenderVolume // every sender, sorted by bytes desc
+	SendersSafe []SenderSafety        // sorted by DeleteBytes desc, capped at 200
+}
 
-	rows, err := s.db.Query(`SELECT sender_email, subject, date, size, labels, junk_reason, is_junk FROM messages`)
+// Aggregations scans the messages table once and fills an Aggregations value.
+func (s *Store) Aggregations() (*Aggregations, error) {
+	rows, err := s.db.Query(`SELECT sender_email, subject, date, size, labels, junk_reason, is_junk, verdict FROM messages`)
 	if err != nil {
-		return r, err
+		return nil, err
 	}
 	defer func() { _ = rows.Close() }()
 
-	senderCount := map[string]int64{}
-	senderBytes := map[string]int64{}
-	categoryCount := map[string]int64{}
+	var (
+		rep        models.StatsReport
+		bySender   = map[string]*models.SenderVolume{}
+		bySafety   = map[string]*SenderSafety{}
+		byCategory = map[string]int64{}
+		topSender  string
+		topCount   int64
+		reclaim    int64
+	)
+	rep.ByCategory = map[string]int64{}
+	rep.ByYear = map[int]int64{}
 
 	for rows.Next() {
 		var (
 			sender, subject, dateStr, labels, junkReason string
 			size                                         int64
-			isJunk                                       int
+			isJunk, verdict                              int
 		)
-		if err := rows.Scan(&sender, &subject, &dateStr, &size, &labels, &junkReason, &isJunk); err != nil {
-			return r, err
+		if err := rows.Scan(&sender, &subject, &dateStr, &size, &labels, &junkReason, &isJunk, &verdict); err != nil {
+			return nil, err
 		}
-		r.TotalMessages++
-		r.EstimatedStorage += size
-		senderCount[sender]++
-		senderBytes[sender] += size
+		rep.TotalMessages++
+		rep.EstimatedStorage += size
 
 		switch junkReason {
 		case models.ReasonNewsletter, models.ReasonMailingList:
-			r.NewsletterCount++
+			rep.NewsletterCount++
 		}
 		switch junkReason {
 		case models.ReasonGitHub, models.ReasonGitLab,
 			models.ReasonJira, models.ReasonSlack, models.ReasonNoreply, models.ReasonBulk,
 			models.ReasonAzureAlert:
-			r.NotificationCount++
+			rep.NotificationCount++
 		}
 		if size > 10*1024*1024 {
-			r.AttachmentsOver10MB++
+			rep.AttachmentsOver10MB++
 		}
 		for _, l := range splitCSV(labels) {
-			categoryCount[l]++
+			byCategory[l]++
 		}
 		if len(dateStr) >= 4 {
 			if y, err := strconv.Atoi(dateStr[:4]); err == nil {
-				r.ByYear[y]++
+				rep.ByYear[y]++
 			}
+		}
+
+		sv := bySender[sender]
+		if sv == nil {
+			sv = &models.SenderVolume{Email: sender}
+			bySender[sender] = sv
+		}
+		sv.Count++
+		sv.Bytes += size
+
+		ss := bySafety[sender]
+		if ss == nil {
+			ss = &SenderSafety{Email: sender}
+			bySafety[sender] = ss
+		}
+		ss.TotalCount++
+		ss.TotalBytes += size
+		if verdict == int(models.VerdictDelete) {
+			ss.DeleteCount++
+			ss.DeleteBytes += size
+			reclaim += size
+		}
+		if verdict == int(models.VerdictKeep) || verdict == int(models.VerdictProtected) {
+			ss.KeepCount++
+		}
+		if junkReason != "" {
+			addReason(&ss.Reasons, junkReason)
+		}
+
+		if sv.Count > topCount {
+			topCount = sv.Count
+			topSender = sender
 		}
 	}
 	if err := rows.Err(); err != nil {
-		return r, err
-	}
-
-	var topSender string
-	var topCount int64
-	for k, v := range senderCount {
-		if v > topCount {
-			topCount = v
-			topSender = k
-		}
-	}
-	r.LargestSender = models.SenderVolume{Email: topSender, Count: topCount, Bytes: senderBytes[topSender]}
-	r.ByCategory = bucketByCategory(categoryCount)
-	return r, nil
-}
-
-// PotentialReclaimOf computes bytes that would be reclaimed for the given
-// verdict value (matches models.Verdict*).
-func (s *Store) PotentialReclaimOf(verdict int) (int64, error) {
-	var total int64
-	if err := s.db.QueryRow(`SELECT COALESCE(SUM(size),0) FROM messages WHERE verdict = ?`, verdict).Scan(&total); err != nil {
-		return 0, err
-	}
-	return total, nil
-}
-
-// SendersByVolume returns senders ranked by total bytes (descending), limited.
-func (s *Store) SendersByVolume(limit int) ([]models.SenderVolume, error) {
-	rows, err := s.db.Query(`SELECT sender_email, COUNT(*), COALESCE(SUM(size),0) FROM messages GROUP BY sender_email ORDER BY 3 DESC LIMIT ?`, limit)
-	if err != nil {
 		return nil, err
 	}
-	defer func() { _ = rows.Close() }()
-	out := []models.SenderVolume{}
-	for rows.Next() {
-		var sv models.SenderVolume
-		if err := rows.Scan(&sv.Email, &sv.Count, &sv.Bytes); err != nil {
-			return nil, err
-		}
-		out = append(out, sv)
+
+	out := &Aggregations{Report: rep}
+	if topSender != "" {
+		out.Report.LargestSender = models.SenderVolume{Email: topSender, Count: topCount, Bytes: bySender[topSender].Bytes}
 	}
-	return out, rows.Err()
+	out.Report.PotentialReclaim = reclaim
+	out.Report.ByCategory = bucketByCategory(byCategory)
+
+	out.BySender = make([]models.SenderVolume, 0, len(bySender))
+	for _, sv := range bySender {
+		out.BySender = append(out.BySender, *sv)
+	}
+	sortByBytesDesc(out.BySender)
+
+	out.SendersSafe = make([]SenderSafety, 0, len(bySafety))
+	for _, ss := range bySafety {
+		out.SendersSafe = append(out.SendersSafe, *ss)
+	}
+	sortByDeleteBytesDesc(out.SendersSafe)
+	if len(out.SendersSafe) > 200 {
+		out.SendersSafe = out.SendersSafe[:200]
+	}
+	return out, nil
+}
+
+func sortByBytesDesc(s []models.SenderVolume) {
+	sort.Slice(s, func(i, j int) bool { return s[i].Bytes > s[j].Bytes })
+}
+
+func sortByDeleteBytesDesc(s []SenderSafety) {
+	sort.Slice(s, func(i, j int) bool { return s[i].DeleteBytes > s[j].DeleteBytes })
+}
+
+func addReason(rs *[]string, r string) {
+	for _, e := range *rs {
+		if e == r {
+			return
+		}
+	}
+	*rs = append(*rs, r)
 }
 
 // LargestAttachments returns the top N candidates with size above threshold.
