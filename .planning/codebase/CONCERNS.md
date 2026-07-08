@@ -6,11 +6,11 @@ Known limitations, technical debt, fragile areas, security concerns, and perform
 
 ### 1. ~~The `@`-Obfuscation Defense Is Load-Bearing~~ → RESOLVED
 
-**Resolution**: The bundled `testdata/fixtures/messages.json` is confirmed to hold valid, non-obfuscated `sender.email` values, and the lint defense (`scripts/lint-email-literals.sh`) plus the `testdata/`-excluded scope keep it that way. The runtime assembly via `engine.MkEmail` remains the load-bearing defense for code.
+**Resolution**: The bundled `testdata/fixtures/messages.json` is confirmed to hold valid, non-obfuscated `sender.email` values, and the lint defense (`scripts/lint-email-literals.sh`) plus the `testdata/`-excluded scope keep it that way. The runtime assembly via `defang.MkEmail` remains the load-bearing defense for code.
 
 **Location**: `internal/defang/defang.go`, `scripts/lint-email-literals.sh`
 
-**What's at risk**: Cloudflare's email-obfuscation source-pass silently rewrites any literal matching `local@domain.tld` into the placeholder `[email protected]` (the `@` is removed). This breaks `extractDomain` (`internal/engine/classifier.go:111`), `matchQuery` substring lookups (`internal/gmailclient/fake.go:96`), `storage.SendersByVolume` SQL aggregation (`internal/storage/sendersafety.go:24`), and any other `@`-dependent pattern.
+**What's at risk**: Cloudflare's email-obfuscation source-pass silently rewrites any literal matching `local@domain.tld` into the placeholder `[email protected]` (the `@` is removed). This breaks `extractDomain` (`internal/engine/classifier.go:138`), `matchQuery` substring lookups (`internal/gmailclient/fake.go`), and the `GROUP BY sender_email` aggregation inside `storage.Aggregations()` (`internal/storage/stats.go`), and any other `@`-dependent pattern.
 
 **Status**: The defense (assemble at runtime via `defang.MkEmail`) is enforced by `scripts/lint-email-literals.sh`, wired into `just lint`, `make lint-emails`, and `.pre-commit-config.yaml`. Bypass path: a developer who skips the lint hook before commit. `testdata/fixtures/messages.json` is excluded from the lint by design (fixtures may carry literals), and the bundled fixture currently holds valid, non-obfuscated `sender.email` values — it is consumed directly by `TestScanCommand_DevFixturePipeline`, which passes. Synthetic-fixture tests (`TestSenderCommand_SyntheticFixturePipeline_ShowsExpectedSenders`, `TestDevCommand_OneShotMode_RendersPipeline`) additionally exercise the engine independent of the bundled file.
 
@@ -24,7 +24,7 @@ Known limitations, technical debt, fragile areas, security concerns, and perform
 
 ### 3. `--yes` Gate Required for State Changes (Safe-by-Design)
 
-**Location**: `internal/cli/pipeline.go:309` (`clean`), `:344` (`purge`)
+**Location**: `internal/cli/pipeline.go` `newCleanCmd` (`--yes` gate), `newPurgeCmd` (`--yes` gate)
 
 **What's at risk**: A future contributor who adds another state-changing subcommand (`flush`, `wipe`, etc.) MUST remember the `--yes` boolean flag + the error-on-missing-yes discrimination. There's no compile-time check that a state-changing cmd has this guard. Mitigation: grep for `--yes` in `internal/cli/cli.go` whenever adding subcommands to scan-build.
 
@@ -32,7 +32,7 @@ Known limitations, technical debt, fragile areas, security concerns, and perform
 
 ### 4. Undo Cache Has No Integrity Check
 
-**Location**: `internal/cli/pipeline.go:437` (`saveTrashedForUndo`), `:445` (`loadTrashedForUndo`)
+**Location**: `internal/storage/undocache.go` (`SaveUndoCache`, `LoadUndoCache`)
 
 **What's at risk**: `~/.config/gclean/undo-cache.json` is a JSON file holding the full pre-trash records in plaintext (mode `0o600`, but still on disk). If the user chmods the file or suffers a partial-write crash, restoring from a corrupted undo cache could re-upsert strange rows.
 
@@ -48,15 +48,16 @@ Known limitations, technical debt, fragile areas, security concerns, and perform
 
 ### 6. ~~Single-Megabyte `internal/cli/cli.go` (842 lines)~~ → RESOLVED 2026-07-08
 
-**Resolution**: Split into 4 per-domain files + a slim `cli.go`:
+**Resolution**: Split into 4 per-domain files + a slim `cli.go`, then the scan→plan→trash flow was lifted into `engine.Pipeline` (stages: `ScanStages` / `PlanStages` / `ApplyStages`):
 
-- `cli.go` (126 lines): Build + AddCommand wiring + cross-cutting helpers (`resolveClient`, `storePath`, `credentialsPath`, `humanBytes`).
-- `auth.go` (70 lines): login/logout.
-- `pipeline.go` (458 lines): scan/stats/dry-run/clean/purge/undo + shared core + undo-cache io.
-- `insights.go` (165 lines): sender/attachments/newsletters/receipts + tui-selection.io.
-- `meta.go` (120 lines): rules/config/tui + helpers.
+- `cli.go` (~126 lines): Build + AddCommand wiring + cross-cutting helpers (`resolveClient`, `storePath`, `credentialsPath`, `humanBytes`).
+- `auth.go` (~70 lines): login/logout.
+- `pipeline.go` (~260 lines): scan/stats/dry-run/clean/purge/undo as thin adapters that build an `engine.Pipeline` and run a stage slice; undo-cache _path_ resolution only (the IO moved to `storage/undocache.go`).
+- `insights.go` (~165 lines): sender/attachments/newsletters/receipts + tui-selection.io.
+- `meta.go` (~120 lines): rules/config/tui + helpers.
+- `engine/pipeline.go` (new): the `Pipeline` + `Stage` seam — `PlanStages` (no Gmail I/O), `ApplyStages` (only Gmail-mutating stage).
 
-Largest file is now `pipeline.go` at 458 lines (well below the 842-line offender). Zero behavior change: every existing test passes unchanged. The split-refactor entry is documented in `.plans/implement-notes.md` (2026-07-08 — cli.go split).
+Zero behavior change: every existing test passes unchanged. The cli.go split is documented in `.plans/implement-notes.md` (2026-07-08); the engine.Pipeline extraction followed as the next deepening.
 
 **Why this category stays useful**: future contributors can grep on a subcommand group (e.g. `grep -l loginCmd internal/cli/`) without scanning 842 lines of unrelated logic — that improvement matters more than the line-count reduction.
 
@@ -112,15 +113,15 @@ Largest file is now `pipeline.go` at 458 lines (well below the 842-line offender
 
 ## Performance
 
-### 15. `Aggregate()` Reads All Rows Into Memory
+### 15. `Aggregations()` Reads All Rows Into Memory
 
-**Location**: `internal/storage/stats.go:10` (`Aggregate`).
+**Location**: `internal/storage/stats.go:24` (`Aggregations`).
 
-**What's at risk**: For a real Gmail account with 100k+ messages, `SELECT` all rows materializes in Go before producing the report. Acceptable for the scaffold (fixture is 40 rows) but will need pagination and incremental aggregation once real Gmail is wired.
+**What's at risk**: For a real Gmail account with 100k+ messages, `SELECT` all rows materializes in Go before producing the report (StatsReport + BySender + SendersSafe in one scan). Acceptable for the scaffold (fixture is 40 rows) but will need pagination and incremental aggregation once real Gmail is wired. Consolidated from the old `Aggregate`/`PotentialReclaimOf`/`SendersByVolume` trio so a schema change propagates to one place.
 
-### 16. `SendersByVolume` Hard-Limits 200 Senders
+### 16. Sender Rollup Hard-Limits 200 Senders
 
-**Location**: `internal/storage/stats.go:89` (`SendersByVolume`, `LIMIT 200`).
+**Location**: `internal/storage/stats.go:131` (`Aggregations().SendersSafe`, capped at 200).
 
 **What's at risk**: For a real Gmail account with thousands of distinct senders, the top-200 may be dominated by truly bulk senders (noreply@github.com variants) and miss smaller but still-impactful ones. The limit is a deliberate scaffold choice — bumping it has no correctness cost; revisit once `tui` is wired up to act on the rollup.
 

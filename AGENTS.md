@@ -60,15 +60,18 @@ gclean undo  --fixtures testdata/fixtures/messages.json
 
 ```
 cmd/gclean/main.go         — slog setup, calls cli.Build()
-internal/cli/              — Cobra command tree (thin handlers)
-internal/engine/           — classifier, protector, evaluator (DSL), planner (pure, no I/O)
+internal/cli/              — Cobra command tree (thin handlers; pipeline adapters in pipeline.go)
+internal/engine/           — classifier, protector, evaluator (DSL), planner, pipeline (stages)
 internal/gmailclient/      — Client interface + FakeClient + RealClient stub
-internal/storage/          — SQLite via modernc.org/sqlite (no CGO)
+internal/storage/          — SQLite via modernc.org/sqlite (no CGO) + undo-cache IO
 internal/config/           — YAML via yaml.v3 (not Viper)
+internal/defang/           — MkEmail (runtime email assembly, defeats obfuscation)
 internal/models/           — cross-package types
 internal/tui/              — experimental Bubble Tea UI
 testdata/fixtures/         — message fixture corpus
 ```
+
+The scan→plan→trash flow is the `engine.Pipeline` seam (`internal/engine/pipeline.go`): composable `Stage`s (Scan → Plan → Apply). CLI handlers build a `Pipeline` and run the stage slice they need. `Plan` does no Gmail I/O; `Apply` is the only Gmail-mutating stage.
 
 Fixtures (`testdata/fixtures/messages.json`) are real Gmail-shaped JSON, used by both `--fixtures` and `NewFakeClientFromMessages()` in tests.
 
