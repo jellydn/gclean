@@ -118,3 +118,23 @@ func (d Document) Compile() (engine.RuleConfig, error) {
 	// therefore do not need parsing.
 	return rc, nil
 }
+
+// CompiledConfig is the planner-ready form of a Document: the parsed rules
+// plus the keep/protect profile. It's what engine.Pipeline consumes so the
+// engine package never imports config (keeps the dependency direction one-way:
+// config → engine, never engine → config).
+type CompiledConfig struct {
+	Rules engine.RuleConfig
+	Keep  engine.KeepConfig
+}
+
+// CompileFull returns both the parsed RuleConfig and the KeepConfig in one
+// call, surfacing the first parse error so we can point users at the
+// offending rule.
+func (d Document) CompileFull() (CompiledConfig, error) {
+	rc, err := d.Compile()
+	if err != nil {
+		return CompiledConfig{}, err
+	}
+	return CompiledConfig{Rules: rc, Keep: d.Keep}, nil
+}

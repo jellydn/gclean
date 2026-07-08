@@ -1,171 +1,47 @@
 package cli
 
 import (
-	"crypto/sha256"
-	"encoding/hex"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"os"
 	"path/filepath"
 	"sort"
-	"strings"
 	"text/tabwriter"
-	"time"
 
 	"github.com/spf13/cobra"
 
 	"gclean/internal/config"
 	"gclean/internal/engine"
-	"gclean/internal/gmailclient"
-	"gclean/internal/models"
 	"gclean/internal/storage"
 )
 
 // pipeline.go — gclean scan / stats / dry-run / clean / purge / undo.
-// Plus the shared core (runScan + planAndApply) and the undo-cache io.
-// These six subcommands are the "action" surface — every other file
-// is either config (meta.go), reporting (insights.go), or auth (auth.go).
+// Plus the undo-cache path resolution. These six subcommands are the
+// "action" surface — every other file is either config (meta.go),
+// reporting (insights.go), or auth (auth.go).
+//
+// The heavy lifting (fetch → classify → upsert → plan → verdict → trash)
+// now lives in engine.Pipeline as composable stages; each handler below is a
+// thin adapter that opens the store, resolves the client + config, and runs
+// the slice of stages it needs.
 
-// --- Core helpers used by scan + dry-run + clean ---------------
-
-// planOutputs bundles the human-readable report plus the trash-eligible IDs
-// and full pre-trash records so the CLI can render dry-run output AND save
-// the undo cache after a real clean. Defined in the cli package so engine
-// does not need to depend on storage.
-type planOutputs struct {
-	Report         models.DryRunReport
-	TrashedIDs     []string
-	TrashedRecords []storage.StoredMessage
-}
-
-// runScan pulls messages through client, classifies each, persists to SQLite.
-// Returns the number of messages processed.
-func runScan(client gmailclient.Client, store *storage.Store) (int, error) {
-	msgs, err := client.ListMessages("", 0)
+// buildPipeline wires an engine.Pipeline from already-resolved CLI inputs.
+// The caller owns store open/close and client/cache resolution.
+func buildPipeline(store *storage.Store, client engine.Gmailer, doc config.Document, out, errOut io.Writer, cachePath string) (engine.Pipeline, error) {
+	cc, err := doc.CompileFull()
 	if err != nil {
-		return 0, fmt.Errorf("list messages: %w", err)
+		return engine.Pipeline{}, err
 	}
-	for _, m := range msgs {
-		c := engine.Classify(m)
-		if err := store.Upsert(storage.StoredMessage{
-			ID:          m.ID,
-			ThreadID:    m.ThreadID,
-			SenderEmail: m.Sender.Email,
-			SenderName:  m.Sender.Name,
-			IsContact:   m.Sender.IsContact,
-			Subject:     m.Subject,
-			Date:        m.Date.Format(time.RFC3339),
-			Size:        m.Size,
-			Labels:      strings.Join(m.Labels, ","),
-			Headers:     encodeJSON(m.Headers),
-			JunkReason:  c.ReasonCode,
-			IsJunk:      c.IsJunk,
-		}); err != nil {
-			return 0, fmt.Errorf("persist %s: %w", m.ID, err)
-		}
-	}
-	return len(msgs), nil
-}
-
-// planAndApply is the shared core of dry-run and clean. It loads the
-// classified messages from SQLite, runs the planner, and (for clean) writes
-// verdicts back AND trashes the delete cohort. For dry-run we just print.
-func planAndApply(client gmailclient.Client, store *storage.Store, commit bool, out, errOut io.Writer) (planOutputs, error) {
-	classified, err := store.AllClassified()
-	if err != nil {
-		return planOutputs{}, err
-	}
-	doc, err := config.Load()
-	if err != nil {
-		return planOutputs{}, err
-	}
-	rc, err := doc.Compile()
-	if err != nil {
-		return planOutputs{}, err
-	}
-	decisions, rep := engine.Plan(engine.PlanInputs{
-		Messages: classified,
-		Config:   rc,
-		Keep:     doc.Keep,
-	})
-
-	for _, d := range decisions {
-		reasons := strings.Join(d.Reasons, ";")
-		if err := store.SetVerdict(d.Message.ID, int(d.Verdict), reasons, d.Verdict == models.VerdictProtected); err != nil {
-			return planOutputs{}, fmt.Errorf("set verdict %s: %w", d.Message.ID, err)
-		}
-	}
-
-	if !commit {
-		return planOutputs{Report: rep}, nil
-	}
-
-	ids := []string{}
-	toTrash := []storage.StoredMessage{}
-	for _, d := range decisions {
-		if d.Verdict != models.VerdictDelete {
-			continue
-		}
-		ids = append(ids, d.Message.ID)
-		toTrash = append(toTrash, storage.StoredMessage{
-			ID:          d.Message.ID,
-			ThreadID:    d.Message.ThreadID,
-			SenderEmail: d.Message.Sender.Email,
-			SenderName:  d.Message.Sender.Name,
-			IsContact:   d.Message.Sender.IsContact,
-			Subject:     d.Message.Subject,
-			Date:        d.Message.Date.Format(time.RFC3339),
-			Size:        d.Message.Size,
-			Labels:      strings.Join(d.Message.Labels, ","),
-			Headers:     encodeJSON(d.Message.Headers),
-			JunkReason:  d.Classified.ReasonCode,
-			IsJunk:      d.Classified.IsJunk,
-			Verdict:     int(models.VerdictDelete),
-		})
-	}
-	if len(ids) > 0 {
-		if err := client.TrashMessages(ids); err != nil {
-			return planOutputs{}, fmt.Errorf("trash: %w", err)
-		}
-		if err := store.MarkTrashed(ids); err != nil {
-			return planOutputs{}, fmt.Errorf("mark trashed: %w", err)
-		}
-		// Stash the originals so undo can restore them.
-		cache, _ := defaultCache()
-		if err := saveTrashedForUndo(cache, toTrash); err != nil {
-			_, _ = fmt.Fprintf(errOut, "warning: couldn't save undo cache: %v\n", err)
-		}
-	}
-	return planOutputs{Report: rep, TrashedIDs: ids, TrashedRecords: toTrash}, nil
-}
-
-// encodeJSON marshals to JSON with no error path (matches the previous
-// inline callers; if any message has an unmarshal-able value we'll log
-// nil rather than crashing the scan).
-func encodeJSON(v any) string {
-	b, _ := json.Marshal(v)
-	return string(b)
-}
-
-// --- top-N rendering (used by dry-run to show leading senders + reasons) ---
-
-type kv struct {
-	k string
-	v int64
-}
-
-func topN(m map[string]int64, n int) []kv {
-	pairs := make([]kv, 0, len(m))
-	for k, v := range m {
-		pairs = append(pairs, kv{k, v})
-	}
-	sort.Slice(pairs, func(i, j int) bool { return pairs[i].v > pairs[j].v })
-	if len(pairs) > n {
-		pairs = pairs[:n]
-	}
-	return pairs
+	return engine.Pipeline{
+		Store:     store,
+		Client:    client,
+		Keep:      cc.Keep,
+		Rules:     cc.Rules,
+		Out:       out,
+		ErrOut:    errOut,
+		CachePath: cachePath,
+	}, nil
 }
 
 // --- Scan / Stats -----------------------------------------------------
@@ -185,11 +61,18 @@ func newScanCmd(out, errOut io.Writer) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			n, err := runScan(client, store)
+			doc, err := config.Load()
 			if err != nil {
 				return err
 			}
-			_, _ = fmt.Fprintf(out, "Scanned %d messages.\n", n)
+			p, err := buildPipeline(store, client, doc, out, errOut, "")
+			if err != nil {
+				return err
+			}
+			if err := p.Run(p.ScanStages()...); err != nil {
+				return err
+			}
+			_, _ = fmt.Fprintf(out, "Scanned %d messages.\n", p.Scanned())
 			_, _ = fmt.Fprintln(out, "Next: `gclean dry-run` to preview, or `gclean stats` for storage analytics.")
 			return nil
 		},
@@ -267,11 +150,18 @@ func newDryRunCmd(out, errOut io.Writer) *cobra.Command {
 			// dry-run needs no real client; pass a no-op so the function
 			// signature stays uniform with clean.
 			client, _ := resolveClient("", credentialsPath())
-			output, err := planAndApply(client, store, false, out, errOut)
+			doc, err := config.Load()
 			if err != nil {
 				return err
 			}
-			rep := output.Report
+			p, err := buildPipeline(store, client, doc, out, errOut, "")
+			if err != nil {
+				return err
+			}
+			if err := p.Run(p.PlanStages()...); err != nil {
+				return err
+			}
+			rep := p.Report()
 			_, _ = fmt.Fprintln(out, "──────────────────────────")
 			_, _ = fmt.Fprintf(out, "Safe to delete\t%d messages\n", rep.DeleteCount)
 			_, _ = fmt.Fprintf(out, "Recover\t%s\n", humanBytes(rep.RecoverBytes))
@@ -288,15 +178,15 @@ func newDryRunCmd(out, errOut io.Writer) *cobra.Command {
 			if len(rep.DeleteBySender) > 0 {
 				_, _ = fmt.Fprintln(out, "\nTop delete senders:")
 				pairs := topN(rep.DeleteBySender, 10)
-				for _, p := range pairs {
-					_, _ = fmt.Fprintf(out, "  %s\t%d msgs\n", p.k, p.v)
+				for _, pr := range pairs {
+					_, _ = fmt.Fprintf(out, "  %s\t%d msgs\n", pr.k, pr.v)
 				}
 			}
 			if len(rep.RecoverByReason) > 0 {
 				_, _ = fmt.Fprintln(out, "\nRecover by reason:")
 				pairs := topN(rep.RecoverByReason, 10)
-				for _, p := range pairs {
-					_, _ = fmt.Fprintf(out, "  %s\t%d msgs\n", p.k, p.v)
+				for _, pr := range pairs {
+					_, _ = fmt.Fprintf(out, "  %s\t%d msgs\n", pr.k, pr.v)
 				}
 			}
 			return nil
@@ -325,11 +215,22 @@ func newCleanCmd(out, errOut io.Writer) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			output, err := planAndApply(client, store, true, out, errOut)
+			doc, err := config.Load()
 			if err != nil {
 				return err
 			}
-			_, _ = fmt.Fprintf(out, "Moved %d messages to Trash.\n", len(output.TrashedIDs))
+			cache, _ := defaultCache()
+			p, err := buildPipeline(store, client, doc, out, errOut, cache)
+			if err != nil {
+				return err
+			}
+			if err := p.Run(p.PlanStages()...); err != nil {
+				return err
+			}
+			if err := p.Run(p.ApplyStages()...); err != nil {
+				return err
+			}
+			_, _ = fmt.Fprintf(out, "Moved %d messages to Trash.\n", len(p.TrashedIDs()))
 			_, _ = fmt.Fprintln(out, "Recoverable within 30 days via `gclean undo`. Permanent via `gclean purge`.")
 			return nil
 		},
@@ -379,7 +280,7 @@ func newUndoCmd(out, errOut io.Writer) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			records, err := loadTrashedForUndo(cache)
+			records, err := storage.LoadUndoCache(cache)
 			if err != nil {
 				return err
 			}
@@ -415,7 +316,7 @@ func newUndoCmd(out, errOut io.Writer) *cobra.Command {
 	return cmd
 }
 
-// --- undo cache ---------------------------------------------------------
+// --- undo cache path ---------------------------------------------------
 
 func defaultCache() (string, error) {
 	if p := os.Getenv("GCLEAN_UNDO_CACHE"); p != "" {
@@ -428,68 +329,21 @@ func defaultCache() (string, error) {
 	return filepath.Join(home, ".config", "gclean", "undo-cache.json"), nil
 }
 
-const undoCacheVersion = 1
+// --- top-N rendering (used by dry-run to show leading senders + reasons) ---
 
-type undoCache struct {
-	Version  int                     `json:"version"`
-	Checksum string                  `json:"checksum"`
-	Records  []storage.StoredMessage `json:"records"`
+type kv struct {
+	k string
+	v int64
 }
 
-// checksumRecords hashes the canonical JSON of the records so a partial write
-// or external tampering is detected before the records are re-inserted.
-func checksumRecords(recs []storage.StoredMessage) (string, error) {
-	payload, err := json.Marshal(recs)
-	if err != nil {
-		return "", err
+func topN(m map[string]int64, n int) []kv {
+	pairs := make([]kv, 0, len(m))
+	for k, v := range m {
+		pairs = append(pairs, kv{k, v})
 	}
-	sum := sha256.Sum256(payload)
-	return hex.EncodeToString(sum[:]), nil
-}
-
-func saveTrashedForUndo(path string, recs []storage.StoredMessage) error {
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-		return err
+	sort.Slice(pairs, func(i, j int) bool { return pairs[i].v > pairs[j].v })
+	if len(pairs) > n {
+		pairs = pairs[:n]
 	}
-	sum, err := checksumRecords(recs)
-	if err != nil {
-		return err
-	}
-	c := undoCache{Version: undoCacheVersion, Checksum: sum, Records: recs}
-	b, err := json.MarshalIndent(c, "", "  ")
-	if err != nil {
-		return err
-	}
-	return os.WriteFile(path, b, 0o600)
-}
-
-func loadTrashedForUndo(path string) ([]storage.StoredMessage, error) {
-	data, err := os.ReadFile(path)
-	if err != nil {
-		if os.IsNotExist(err) {
-			return nil, nil
-		}
-		return nil, err
-	}
-	var c undoCache
-	if err := json.Unmarshal(data, &c); err != nil {
-		return nil, err
-	}
-	// Legacy caches (written before the integrity tag existed) carry no
-	// checksum; accept them for backward compatibility. Newer caches are
-	// verified so a corrupt or partially-written file is refused instead of
-	// re-upserting strange rows (CONCERNS.md #4).
-	if c.Checksum != "" {
-		if c.Version != undoCacheVersion {
-			return nil, fmt.Errorf("undo cache version %d unsupported (want %d)", c.Version, undoCacheVersion)
-		}
-		want, err := checksumRecords(c.Records)
-		if err != nil {
-			return nil, err
-		}
-		if want != c.Checksum {
-			return nil, errors.New("undo cache checksum mismatch: file may be corrupt or partially written")
-		}
-	}
-	return c.Records, nil
+	return pairs
 }

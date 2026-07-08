@@ -3,7 +3,7 @@
 //
 //	auth.go      — login / logout                   (this is a scaffolded stub)
 //	pipeline.go  — scan / stats / dry-run / clean / purge / undo
-//	              + shared runScan + planAndApply + undo-cache io
+//	              as thin adapters over engine.Pipeline (undo-cache path only)
 //	insights.go  — sender / attachments / newsletters / receipts
 //	              + tui-selection.saveSelection
 //	meta.go      — rules / config / tui             (experimental TUI in meta.go)

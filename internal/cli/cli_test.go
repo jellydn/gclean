@@ -170,13 +170,12 @@ func TestDemoCommand_RendersExpectedOutput(t *testing.T) {
 //
 //	gmailclient.FakeClient.ListMessages  (reads the fixture JSON)
 //	→ storage.Store.Upsert                (writes each message to SQLite)
-//	→ storage.Store.SendersByVolume       (sender command reads from here)
+//	→ storage.Store.Aggregations().BySender (sender command reads from here)
 //	→ tabwriter (3 columns: SENDER / MESSAGES / STORAGE)
 //
-// (NB: the sender command reads from SendersByVolume, NOT SenderSafety —
-// SenderSafety is what `gclean tui` consumes, with the per-sender
-// safe-to-delete split. The user's framing in the original request
-// mentioned SenderSafety; the test guards the real production path
+// (NB: the sender command reads from Aggregations().BySender, NOT
+// SenderSafety — SenderSafety is what `gclean tui` consumes, with the
+// per-sender safe-to-delete split. The test guards the real production path
 // regardless.) The test guards the constructor identity of the output:
 // any future refactor that reverts to a literal `local@domain` in this
 // test source (and re-corrupts the file via the Cloudflare obfuscator)
@@ -201,7 +200,7 @@ func TestSenderCommand_SyntheticFixturePipeline_ShowsExpectedSenders(t *testing.
 	t.Setenv("GCLEAN_DB_PATH", tmp+"/gclean.db")
 
 	// Build a synthetic JSON fixture at runtime. github.com gets 2
-	// messages to exercise the GROUP BY aggregation in SendersByVolume
+	// messages to exercise the per-sender rollup in Aggregations().BySender
 	// (it returns one row per distinct sender_email regardless of
 	// message count).
 	type fixtureMsg struct {
