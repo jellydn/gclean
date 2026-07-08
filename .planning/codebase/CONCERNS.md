@@ -8,13 +8,13 @@ Known limitations, technical debt, fragile areas, security concerns, and perform
 
 **Resolution**: The bundled `testdata/fixtures/messages.json` is confirmed to hold valid, non-obfuscated `sender.email` values, and the lint defense (`scripts/lint-email-literals.sh`) plus the `testdata/`-excluded scope keep it that way. The runtime assembly via `engine.MkEmail` remains the load-bearing defense for code.
 
-**Location**: `internal/engine/testutil.go:17`, `scripts/lint-email-literals.sh`
+**Location**: `internal/defang/defang.go`, `scripts/lint-email-literals.sh`
 
 **What's at risk**: Cloudflare's email-obfuscation source-pass silently rewrites any literal matching `local@domain.tld` into the placeholder `[email protected]` (the `@` is removed). This breaks `extractDomain` (`internal/engine/classifier.go:111`), `matchQuery` substring lookups (`internal/gmailclient/fake.go:96`), `storage.SendersByVolume` SQL aggregation (`internal/storage/sendersafety.go:24`), and any other `@`-dependent pattern.
 
-**Status**: The defense (assemble at runtime via `engine.MkEmail`) is enforced by `scripts/lint-email-literals.sh`, wired into `just lint`, `make lint-emails`, and `.pre-commit-config.yaml`. Bypass path: a developer who skips the lint hook before commit. `testdata/fixtures/messages.json` is excluded from the lint by design (fixtures may carry literals), and the bundled fixture currently holds valid, non-obfuscated `sender.email` values — it is consumed directly by `TestScanCommand_DevFixturePipeline`, which passes. Synthetic-fixture tests (`TestSenderCommand_SyntheticFixturePipeline_ShowsExpectedSenders`, `TestDevCommand_OneShotMode_RendersPipeline`) additionally exercise the engine independent of the bundled file.
+**Status**: The defense (assemble at runtime via `defang.MkEmail`) is enforced by `scripts/lint-email-literals.sh`, wired into `just lint`, `make lint-emails`, and `.pre-commit-config.yaml`. Bypass path: a developer who skips the lint hook before commit. `testdata/fixtures/messages.json` is excluded from the lint by design (fixtures may carry literals), and the bundled fixture currently holds valid, non-obfuscated `sender.email` values — it is consumed directly by `TestScanCommand_DevFixturePipeline`, which passes. Synthetic-fixture tests (`TestSenderCommand_SyntheticFixturePipeline_ShowsExpectedSenders`, `TestDevCommand_OneShotMode_RendersPipeline`) additionally exercise the engine independent of the bundled file.
 
-**Mitigation when adding code**: Build `Sender.Email` and any other `@`-bearing string with `engine.MkEmail(local, domain)` at runtime. If you absolutely must add a literal (fixture JSON in `testdata/` is OK), put it in `testdata/`. The lint excludes that directory.
+**Mitigation when adding code**: Build `Sender.Email` and any other `@`-bearing string with `defang.MkEmail(local, domain)` at runtime. If you absolutely must add a literal (fixture JSON in `testdata/` is OK), put it in `testdata/`. The lint excludes that directory.
 
 ### 2. RealClient Footgun: Credentials Without Implementation
 

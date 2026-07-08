@@ -5,7 +5,7 @@ import (
 	"io"
 	"text/tabwriter"
 
-	"gclean/internal/engine"
+	"gclean/internal/defang"
 	"gclean/internal/models"
 	"gclean/internal/storage"
 
@@ -25,7 +25,7 @@ import (
 //
 // Two defenses are load-bearing here:
 //
-//  1. Every address is constructed at runtime via engine.MkEmail, so no
+//  1. Every address is constructed at runtime via defang.MkEmail, so no
 //     literal `local@domain` pattern exists in source. This defeats the
 //     Cloudflare source-pass obfuscation that has previously rewritten test
 //     literals into `[email protected]` placeholders.
@@ -37,7 +37,7 @@ func newDemoCmd(out, errOut io.Writer) *cobra.Command {
 		Use:   "demo",
 		Short: "Print a self-contained preview of `gclean tui` output (no scan required)",
 		Long: "Constructs a small set of sample storage.SenderSafety rows at runtime\n" +
-			"via engine.MkEmail and renders them in the same shape as `gclean tui`.\n" +
+			"via defang.MkEmail and renders them in the same shape as `gclean tui`.\n" +
 			"Useful for:\n" +
 			"  - new contributors checking the CLI on a fresh box\n" +
 			"  - sanity-checking that a coworker's terminal renders the columns\n" +
@@ -60,7 +60,7 @@ func newDemoCmd(out, errOut io.Writer) *cobra.Command {
 			// this template should note the approximation.
 			samples := []storage.SenderSafety{
 				{
-					Email:       engine.MkEmail("alerts", "stripe.com"),
+					Email:       defang.MkEmail("alerts", "stripe.com"),
 					TotalCount:  14,
 					TotalBytes:  2_310_000,
 					DeleteCount: 14,
@@ -69,7 +69,7 @@ func newDemoCmd(out, errOut io.Writer) *cobra.Command {
 					Reasons:     []string{models.ReasonStripe},
 				},
 				{
-					Email:       engine.MkEmail("noreply", "github.com"),
+					Email:       defang.MkEmail("noreply", "github.com"),
 					TotalCount:  38,
 					TotalBytes:  780_000,
 					DeleteCount: 30,
@@ -78,7 +78,7 @@ func newDemoCmd(out, errOut io.Writer) *cobra.Command {
 					Reasons:     []string{models.ReasonGitHub},
 				},
 				{
-					Email:       engine.MkEmail("newsletter", "pragmaticengineer.com"),
+					Email:       defang.MkEmail("newsletter", "pragmaticengineer.com"),
 					TotalCount:  12,
 					TotalBytes:  540_000,
 					DeleteCount: 11,
@@ -87,7 +87,7 @@ func newDemoCmd(out, errOut io.Writer) *cobra.Command {
 					Reasons:     []string{models.ReasonNewsletter},
 				},
 				{
-					Email:       engine.MkEmail("billing", "amazonaws.com"),
+					Email:       defang.MkEmail("billing", "amazonaws.com"),
 					TotalCount:  6,
 					TotalBytes:  211_000,
 					DeleteCount: 5,
@@ -96,7 +96,7 @@ func newDemoCmd(out, errOut io.Writer) *cobra.Command {
 					Reasons:     []string{models.ReasonAWSBilling},
 				},
 				{
-					Email:       engine.MkEmail("noreply", "internal.example.com"),
+					Email:       defang.MkEmail("noreply", "internal.example.com"),
 					TotalCount:  4,
 					TotalBytes:  88_000,
 					DeleteCount: 4,
@@ -106,7 +106,7 @@ func newDemoCmd(out, errOut io.Writer) *cobra.Command {
 				},
 			}
 			_, _ = fmt.Fprintln(out, "gclean demo: sample storage.SenderSafety preview (no scan has been run yet)")
-			_, _ = fmt.Fprintln(out, "Each row was constructed at runtime via engine.MkEmail —")
+			_, _ = fmt.Fprintln(out, "Each row was constructed at runtime via defang.MkEmail —")
 			_, _ = fmt.Fprintln(out, "the obfuscation-defense is load-bearing in production code, not just in tests.")
 			_, _ = fmt.Fprintln(out)
 			tw := tabwriter.NewWriter(out, 0, 0, 2, ' ', 0)

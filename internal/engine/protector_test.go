@@ -4,14 +4,15 @@ import (
 	"testing"
 	"time"
 
+	"gclean/internal/defang"
 	"gclean/internal/models"
 )
 
-// MkEmail() is exported from internal/engine/testutil.go. Same package.
+// defang.MkEmail is provided by the internal/defang package. Same package.
 
 func TestProtect_Starred_SkippedWhenDisabledInConfig(t *testing.T) {
 	m := &models.Message{
-		Sender: models.Sender{Email: MkEmail("mailbox", "example.com")},
+		Sender: models.Sender{Email: defang.MkEmail("mailbox", "example.com")},
 		Date:   time.Now().Add(-730 * 24 * time.Hour),
 		Labels: []string{"STARRED"},
 	}
@@ -28,7 +29,7 @@ func TestProtect_Starred_SkippedWhenDisabledInConfig(t *testing.T) {
 
 func TestProtect_RecentWindow(t *testing.T) {
 	m := &models.Message{
-		Sender: models.Sender{Email: MkEmail("someone", "example.com")},
+		Sender: models.Sender{Email: defang.MkEmail("someone", "example.com")},
 		Date:   time.Now().Add(-30 * 24 * time.Hour),
 		Labels: []string{},
 	}
@@ -37,7 +38,7 @@ func TestProtect_RecentWindow(t *testing.T) {
 		t.Fatalf("recent date must be protected, got %+v", r)
 	}
 	old := &models.Message{
-		Sender: models.Sender{Email: MkEmail("old-msg", "example.com")},
+		Sender: models.Sender{Email: defang.MkEmail("old-msg", "example.com")},
 		Date:   time.Now().Add(-400 * 24 * time.Hour),
 		Labels: []string{},
 	}
@@ -49,7 +50,7 @@ func TestProtect_RecentWindow(t *testing.T) {
 
 func TestProtect_Contact(t *testing.T) {
 	m := &models.Message{
-		Sender: models.Sender{Email: MkEmail("alice", "example.com"), IsContact: true},
+		Sender: models.Sender{Email: defang.MkEmail("alice", "example.com"), IsContact: true},
 		Date:   time.Now().Add(-100 * 24 * time.Hour),
 		Labels: []string{},
 	}
@@ -61,7 +62,7 @@ func TestProtect_Contact(t *testing.T) {
 
 func TestProtect_Whitelist(t *testing.T) {
 	m := &models.Message{
-		Sender: models.Sender{Email: MkEmail("user", "bank.com")},
+		Sender: models.Sender{Email: defang.MkEmail("user", "bank.com")},
 		Date:   time.Now().Add(-2000 * 24 * time.Hour),
 		Labels: []string{},
 	}
@@ -73,7 +74,7 @@ func TestProtect_Whitelist(t *testing.T) {
 
 func TestProtect_SentByUser(t *testing.T) {
 	m := &models.Message{
-		Sender: models.Sender{Email: MkEmail("me-self", "example.com")},
+		Sender: models.Sender{Email: defang.MkEmail("me-self", "example.com")},
 		Date:   time.Now().Add(-100 * 24 * time.Hour),
 		Labels: []string{"SENT"},
 	}

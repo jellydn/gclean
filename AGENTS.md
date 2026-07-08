@@ -19,10 +19,10 @@ CI and a pre-commit hook (`scripts/lint-email-literals.sh`) reject any raw `loca
 Always assemble addresses at runtime:
 
 ```go
-addr := engine.MkEmail("noreply", "example.com") // "noreply@example.com"
+addr := defang.MkEmail("noreply", "example.com") // "noreply@example.com"
 ```
 
-`MkEmail` lives in `internal/engine/testutil.go` and is intentionally non-test code so production fixture loaders can use it too. This is the single most likely thing to trip a PR.
+`MkEmail` lives in `internal/defang` and is intentionally non-test code so production fixture loaders can use it too. This is the single most likely thing to trip a PR.
 
 ## OAuth is NOT wired
 

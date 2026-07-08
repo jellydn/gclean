@@ -1,4 +1,4 @@
-// Build any email-shaped assertion via `engine.MkEmail(local, domain)`, not a
+// Build any email-shaped assertion via `defang.MkEmail(local, domain)`, not a
 // literal — see TestDemoCommand_RendersExpectedOutput for the pattern.
 // Otherwise the test file itself becomes a Cloudflare-obfuscation attack
 // surface.
@@ -14,7 +14,7 @@ import (
 	"strings"
 	"testing"
 
-	"gclean/internal/engine"
+	"gclean/internal/defang"
 )
 
 func TestBuild_Help(t *testing.T) {
@@ -98,14 +98,14 @@ func TestCleanCommand_RefusesWithoutYes(t *testing.T) {
 
 // TestDemoCommand_RendersExpectedOutput pins the obfuscation-defense
 // migration: `gclean demo` constructs every sample address via
-// engine.MkEmail. Constructor-function output must contain the same
+// defang.MkEmail. Constructor-function output must contain the same
 // addresses — so any future refactor that reverts to literal sender
 // strings (and re-corrupts the file via the Cloudflare obfuscator) breaks
 // the test loudly.
 //
 // Deterministic — no filesystem, env, or fixtures required. Buffers come
 // from t.TempDir-style bytes.Buffer, addresses built at runtime via
-// engine.MkEmail to avoid putting a literal `local@domain` in test source
+// defang.MkEmail to avoid putting a literal `local@domain` in test source
 // (which the obfuscator would rewrite).
 func TestDemoCommand_RendersExpectedOutput(t *testing.T) {
 	var out, errOut bytes.Buffer
@@ -119,11 +119,11 @@ func TestDemoCommand_RendersExpectedOutput(t *testing.T) {
 	// Expected addresses: build at runtime so the test source itself has
 	// no literal `local@domain` tokens.
 	expected := []string{
-		engine.MkEmail("alerts", "stripe.com"),
-		engine.MkEmail("noreply", "github.com"),
-		engine.MkEmail("newsletter", "pragmaticengineer.com"),
-		engine.MkEmail("billing", "amazonaws.com"),
-		engine.MkEmail("noreply", "internal.example.com"),
+		defang.MkEmail("alerts", "stripe.com"),
+		defang.MkEmail("noreply", "github.com"),
+		defang.MkEmail("newsletter", "pragmaticengineer.com"),
+		defang.MkEmail("billing", "amazonaws.com"),
+		defang.MkEmail("noreply", "internal.example.com"),
 	}
 	for _, want := range expected {
 		if !strings.Contains(body, want) {
@@ -181,7 +181,7 @@ func TestDemoCommand_RendersExpectedOutput(t *testing.T) {
 // any future refactor that reverts to a literal `local@domain` in this
 // test source (and re-corrupts the file via the Cloudflare obfuscator)
 // breaks the test loudly because every expected address is built via
-// engine.MkEmail at runtime.
+// defang.MkEmail at runtime.
 //
 // Why a synthetic runtime-generated fixture, not the on-disk
 // testdata/fixtures/messages.json? The on-disk fixture is itself
@@ -190,7 +190,7 @@ func TestDemoCommand_RendersExpectedOutput(t *testing.T) {
 // testdata/fixtures/messages.json | wc -c` returns 0). Driving
 // `gclean scan --fixtures` against that file would produce a single
 // collapsed SendersByVolume row, not 40 distinct senders. Generating
-// the fixture at runtime via engine.MkEmail sidesteps the obfuscator:
+// the fixture at runtime via defang.MkEmail sidesteps the obfuscator:
 // every address is built fresh in Go, so the JSON never contains a
 // literal `local@domain` that the obfuscator could pattern-match.
 //
@@ -245,7 +245,7 @@ func TestSenderCommand_SyntheticFixturePipeline_ShowsExpectedSenders(t *testing.
 				Headers:  map[string]string{},
 				Snippet:  "...",
 			}
-			m.Sender.Email = engine.MkEmail(s.local, s.domain)
+			m.Sender.Email = defang.MkEmail(s.local, s.domain)
 			m.Sender.Name = s.name
 			msgs = append(msgs, m)
 		}
@@ -280,11 +280,11 @@ func TestSenderCommand_SyntheticFixturePipeline_ShowsExpectedSenders(t *testing.
 	// Expected addresses — all built at runtime so the test source has
 	// no literal `local@domain` tokens (see top-of-file doc comment).
 	expected := []string{
-		engine.MkEmail("noreply", "github.com"),               // high-volume automated
-		engine.MkEmail("noreply", "stripe.com"),               // billing
-		engine.MkEmail("billing", "amazonaws.com"),            // billing
-		engine.MkEmail("newsletter", "pragmaticengineer.com"), // newsletter
-		engine.MkEmail("me", "example.com"),                   // self-sent
+		defang.MkEmail("noreply", "github.com"),               // high-volume automated
+		defang.MkEmail("noreply", "stripe.com"),               // billing
+		defang.MkEmail("billing", "amazonaws.com"),            // billing
+		defang.MkEmail("newsletter", "pragmaticengineer.com"), // newsletter
+		defang.MkEmail("me", "example.com"),                   // self-sent
 	}
 	for _, want := range expected {
 		if !strings.Contains(body, want) {
@@ -315,7 +315,7 @@ func TestSenderCommand_SyntheticFixturePipeline_ShowsExpectedSenders(t *testing.
 // TestMessagesJSON_HasNoPlaceholder is the regression lock for the
 // 2026-07-08 fix that replaced the 40 `sender.email` "[email protected]"
 // placeholders in testdata/fixtures/messages.json with proper
-// `engine.MkEmail`-style addresses (`noreply@github.com` etc.).
+// `defang.MkEmail`-style addresses (`noreply@github.com` etc.).
 //
 // Why a bytes-level scan, not a JSON-parse + struct compare?
 // Cloudflare's email-obfuscation source-pass silently rewrites ANY
@@ -330,16 +330,16 @@ func TestSenderCommand_SyntheticFixturePipeline_ShowsExpectedSenders(t *testing.
 //   - a future contributor accidentally commits a regenerated fixture
 //     that was produced by a tool that ran through the obfuscator;
 //   - a CI step that copies the file through Cloudflare and re-rewrites;
-//   - a hand-edit that someone forgets to run through `engine.MkEmail`.
+//   - a hand-edit that someone forgets to run through `defang.MkEmail`.
 //
 // What it asserts:
-//   1. The placeholder string "[email protected]" must not appear ANYWHERE
-//      in the fixture bytes. If it does, fail with offset + line + col
-//      and a 30-byte content preview for triage.
-//   2. The JSON must parse cleanly.
-//   3. The fixture must contain >=30 distinct sender.email values
-//      (current count: 30). A partial corruption that corrupts SOME
-//      but not all senders would slip past (1) but fails (3).
+//  1. The placeholder string "[email protected]" must not appear ANYWHERE
+//     in the fixture bytes. If it does, fail with offset + line + col
+//     and a 30-byte content preview for triage.
+//  2. The JSON must parse cleanly.
+//  3. The fixture must contain >=30 distinct sender.email values
+//     (current count: 30). A partial corruption that corrupts SOME
+//     but not all senders would slip past (1) but fails (3).
 const minDistinctFixtureSenders = 30 // 30 today; bump if you intentionally grow the corpus
 
 func TestMessagesJSON_HasNoPlaceholder(t *testing.T) {
@@ -360,7 +360,7 @@ func TestMessagesJSON_HasNoPlaceholder(t *testing.T) {
 					end = len(data)
 				}
 				t.Fatalf("fixture %s contains the Cloudflare obfuscation placeholder %q at offset %d (line %d col %d). "+
-					"Context bytes: %q\nRegenerate via engine.MkEmail-style runtime-join, never commit a literal `local@domain` "+
+					"Context bytes: %q\nRegenerate via defang.MkEmail-style runtime-join, never commit a literal `local@domain` "+
 					"through any pipeline that runs Cloudflare's email-obfuscation source-pass.",
 					path, placeholder, idx, line, col, data[idx:end])
 			}
@@ -415,7 +415,7 @@ func TestMessagesJSON_HasNoPlaceholder(t *testing.T) {
 // `gclean dev --fixtures testdata/fixtures/messages.json` then edit
 // the fixture and watch the output update.
 //
-// Deterministic — synthetic fixture built at runtime via engine.MkEmail
+// Deterministic — synthetic fixture built at runtime via defang.MkEmail
 // (so the test source has no literal `local@domain`), temp DB and
 // temp fixture via t.TempDir(), no network, no env beyond
 // GCLEAN_DB_PATH.
@@ -423,7 +423,7 @@ func TestDevCommand_OneShotMode_RendersPipeline(t *testing.T) {
 	tmp := t.TempDir()
 	t.Setenv("GCLEAN_DB_PATH", tmp+"/gclean.db")
 
-	// Build a synthetic fixture with one engine.MkEmail-built sender.
+	// Build a synthetic fixture with one defang.MkEmail-built sender.
 	// Mirrors the inline struct pattern used in
 	// TestSenderCommand_SyntheticFixturePipeline_ShowsExpectedSenders so
 	// a contributor can grep dev.go + cli_test.go together for the
@@ -453,7 +453,7 @@ func TestDevCommand_OneShotMode_RendersPipeline(t *testing.T) {
 		Headers:  map[string]string{},
 		Snippet:  "...",
 	}
-	sample.Sender.Email = engine.MkEmail("noreply", "github.com")
+	sample.Sender.Email = defang.MkEmail("noreply", "github.com")
 	sample.Sender.Name = "GitHub"
 	fixturePath := filepath.Join(tmp, "messages.json")
 	data, err := json.Marshal([]fixtureMsg{sample})

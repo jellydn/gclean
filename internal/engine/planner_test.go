@@ -4,10 +4,11 @@ import (
 	"testing"
 	"time"
 
+	"gclean/internal/defang"
 	"gclean/internal/models"
 )
 
-// MkEmail() is exported from internal/engine/testutil.go. Same package.
+// defang.MkEmail is provided by the internal/defang package. Same package.
 
 // classified is the test helper for constructing *models.Classified values.
 func classified(id, sender, subject string, date time.Time, size int64, isJunk bool, reason string, labels ...string) *models.Classified {
@@ -64,8 +65,8 @@ func TestPlan_DeleteRule_AppliesOnlyToJunk(t *testing.T) {
 		Messages: []*models.Classified{
 			// Sizes here are illustrative — findByID makes the assertions
 			// insensitive to whatever ordering Plan() picks.
-			classified("junk", MkEmail("junky-local", "example.com"), "spam", time.Now().Add(-200*24*time.Hour), 1000, true, models.ReasonNoreply),
-			classified("human", MkEmail("human-local", "example.com"), "hi", time.Now().Add(-200*24*time.Hour), 2000, false, "", "INBOX"),
+			classified("junk", defang.MkEmail("junky-local", "example.com"), "spam", time.Now().Add(-200*24*time.Hour), 1000, true, models.ReasonNoreply),
+			classified("human", defang.MkEmail("human-local", "example.com"), "hi", time.Now().Add(-200*24*time.Hour), 2000, false, "", "INBOX"),
 		},
 		Config: RuleConfig{Delete: []Rule{deleteRule}},
 		Keep:   KeepConfig{},
@@ -89,7 +90,7 @@ func TestPlan_KeepRulesBeatsDeleteRules(t *testing.T) {
 	// A keep-rule match beats a delete-rule match.
 	keepRule, _ := ParseRule("keep", "subject:hello")
 	delRule, _ := ParseRule("delete", "from:example.com")
-	m := classified("keep-wins", MkEmail("any-local", "example.com"), "hello there", time.Now().Add(-400*24*time.Hour), 100, true, models.ReasonNoreply)
+	m := classified("keep-wins", defang.MkEmail("any-local", "example.com"), "hello there", time.Now().Add(-400*24*time.Hour), 100, true, models.ReasonNoreply)
 	decisions, _ := Plan(PlanInputs{
 		Messages: []*models.Classified{m},
 		Config:   RuleConfig{Keep: []Rule{keepRule}, Delete: []Rule{delRule}},
@@ -102,7 +103,7 @@ func TestPlan_KeepRulesBeatsDeleteRules(t *testing.T) {
 }
 
 func TestPlan_IgnoresDomain(t *testing.T) {
-	m := classified("ignored-bank", MkEmail("alerts", "bank.com"), "Trusted email", time.Now().Add(-800*24*24*time.Hour), 1000, true, models.ReasonNewsletter)
+	m := classified("ignored-bank", defang.MkEmail("alerts", "bank.com"), "Trusted email", time.Now().Add(-800*24*24*time.Hour), 1000, true, models.ReasonNewsletter)
 	decisions, rep := Plan(PlanInputs{
 		Messages: []*models.Classified{m},
 		Config:   RuleConfig{Ignore: []string{"bank.com"}, Delete: []Rule{}}, // would otherwise match delete-rule
@@ -118,7 +119,7 @@ func TestPlan_IgnoresDomain(t *testing.T) {
 }
 
 func TestPlan_ProtectionBeatsRules(t *testing.T) {
-	m := classified("starred-msg", MkEmail("boss", "example.com"), "urgent", time.Now().Add(-5*24*time.Hour), 1000, false, "", "STARRED")
+	m := classified("starred-msg", defang.MkEmail("boss", "example.com"), "urgent", time.Now().Add(-5*24*time.Hour), 1000, false, "", "STARRED")
 	decisions, _ := Plan(PlanInputs{
 		Messages: []*models.Classified{m},
 		Config:   RuleConfig{Delete: []Rule{{Action: "delete", Predicates: []Predicate{{Key: "from", Value: "any-local"}}}}},
@@ -132,7 +133,7 @@ func TestPlan_ProtectionBeatsRules(t *testing.T) {
 
 func TestPlan_Archive(t *testing.T) {
 	archiveRule, _ := ParseRule("archive", "subject:receipt")
-	m := classified("archive-me", MkEmail("stripe-billing", "example.com"), "Receipt for order #1", time.Now().Add(-180*24*time.Hour), 100, true, models.ReasonStripe)
+	m := classified("archive-me", defang.MkEmail("stripe-billing", "example.com"), "Receipt for order #1", time.Now().Add(-180*24*time.Hour), 100, true, models.ReasonStripe)
 	decisions, rep := Plan(PlanInputs{
 		Messages: []*models.Classified{m},
 		Config:   RuleConfig{Archive: []Rule{archiveRule}},

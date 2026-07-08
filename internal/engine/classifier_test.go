@@ -5,11 +5,12 @@ import (
 	"testing"
 	"time"
 
+	"gclean/internal/defang"
 	"gclean/internal/models"
 )
 
-// MkEmail() is exported from internal/engine/testutil.go for the same reason
-// this test file used to declare a local	MkEmail(): runtime concatenation of the
+// defang.MkEmail is provided by the internal/defang package for the same reason
+// this test file used to declare a local defang.MkEmail(): runtime concatenation of the
 // "@" defends against Cloudflare's email-obfuscation rewriting of literal
 // "local@domain" tokens into "[email protected]". Helper imported via package.
 
@@ -26,14 +27,14 @@ func msg(headers map[string]string, sender string, labels ...string) *models.Mes
 }
 
 func TestClassify_ListUnsubscribe(t *testing.T) {
-	c := Classify(msg(map[string]string{"List-Unsubscribe": "<mailto:[email protected]>"}, MkEmail("alice", "example.com")))
+	c := Classify(msg(map[string]string{"List-Unsubscribe": "<mailto:[email protected]>"}, defang.MkEmail("alice", "example.com")))
 	if !c.IsJunk || c.ReasonCode != models.ReasonNewsletter {
 		t.Fatalf("expected newsletter, got %+v", c)
 	}
 }
 
 func TestClassify_ListID(t *testing.T) {
-	c := Classify(msg(map[string]string{"List-Id": "list <l.example.com>"}, MkEmail("alice", "example.com")))
+	c := Classify(msg(map[string]string{"List-Id": "list <l.example.com>"}, defang.MkEmail("alice", "example.com")))
 	if !c.IsJunk || c.ReasonCode != models.ReasonMailingList {
 		t.Fatalf("expected mailing_list, got %+v", c)
 	}
@@ -43,7 +44,7 @@ func TestClassify_PrecedenceBulk(t *testing.T) {
 	for _, v := range []string{"bulk", "list", "junk", "BULK"} {
 		// Use a sender whose local-part does NOT start with "noreply" so this
 		// test exercises the Precedence path, not the noreply path.
-		c := Classify(msg(map[string]string{"Precedence": v}, MkEmail("alice", "example.com")))
+		c := Classify(msg(map[string]string{"Precedence": v}, defang.MkEmail("alice", "example.com")))
 		if !c.IsJunk || c.ReasonCode != models.ReasonBulk {
 			t.Fatalf("Precedence=%q: expected bulk, got %+v", v, c)
 		}
@@ -51,11 +52,11 @@ func TestClassify_PrecedenceBulk(t *testing.T) {
 }
 
 func TestClassify_AutoSubmitted(t *testing.T) {
-	c := Classify(msg(map[string]string{"Auto-Submitted": "auto-generated"}, MkEmail("alice", "example.com")))
+	c := Classify(msg(map[string]string{"Auto-Submitted": "auto-generated"}, defang.MkEmail("alice", "example.com")))
 	if !c.IsJunk || c.ReasonCode != models.ReasonBulk {
 		t.Fatalf("expected bulk, got %+v", c)
 	}
-	c2 := Classify(msg(map[string]string{"Auto-Submitted": "no"}, MkEmail("alice", "example.com")))
+	c2 := Classify(msg(map[string]string{"Auto-Submitted": "no"}, defang.MkEmail("alice", "example.com")))
 	if c2.IsJunk {
 		t.Fatalf("Auto-Submitted:no must NOT be junk, got %+v", c2)
 	}
@@ -64,7 +65,7 @@ func TestClassify_AutoSubmitted(t *testing.T) {
 func TestClassify_NoReplyFromDomain(t *testing.T) {
 	locals := []string{"noreply", "no-reply", "donotreply", "do-not-reply"}
 	for _, l := range locals {
-		addr := MkEmail(l, "example.com")
+		addr := defang.MkEmail(l, "example.com")
 		c := Classify(msg(map[string]string{}, addr))
 		if !c.IsJunk || c.ReasonCode != models.ReasonNoreply {
 			t.Fatalf("from=%q: expected noreply, got %+v", addr, c)
@@ -73,14 +74,14 @@ func TestClassify_NoReplyFromDomain(t *testing.T) {
 }
 
 func TestClassify_PromotionsCategory(t *testing.T) {
-	c := Classify(msg(map[string]string{}, MkEmail("alice", "example.com"), "CATEGORY_PROMOTIONS"))
+	c := Classify(msg(map[string]string{}, defang.MkEmail("alice", "example.com"), "CATEGORY_PROMOTIONS"))
 	if !c.IsJunk || c.ReasonCode != models.ReasonPromotion {
 		t.Fatalf("expected promotion, got %+v", c)
 	}
 }
 
 func TestClassify_SocialCategory(t *testing.T) {
-	c := Classify(msg(map[string]string{}, MkEmail("alice", "example.com"), "CATEGORY_SOCIAL"))
+	c := Classify(msg(map[string]string{}, defang.MkEmail("alice", "example.com"), "CATEGORY_SOCIAL"))
 	if !c.IsJunk || c.ReasonCode != models.ReasonSocial {
 		t.Fatalf("expected social, got %+v", c)
 	}
@@ -89,7 +90,7 @@ func TestClassify_SocialCategory(t *testing.T) {
 func TestClassify_KnownDomains(t *testing.T) {
 	// Slice form — Go 1.26's stricter vet treats duplicate map-key entries as
 	// a build failure; a slice of cases sidesteps it cleanly. Emails are
-	// assembled via	MkEmail() so the obfuscator cannot rewrite them.
+	// assembled via	defang.MkEmail() so the obfuscator cannot rewrite them.
 	cases := []struct {
 		domain string
 		want   string
@@ -108,7 +109,7 @@ func TestClassify_KnownDomains(t *testing.T) {
 		{"twitter.com", models.ReasonSocial},
 	}
 	for _, tc := range cases {
-		addr := MkEmail("a", tc.domain)
+		addr := defang.MkEmail("a", tc.domain)
 		got := Classify(msg(map[string]string{}, addr))
 		if !got.IsJunk || got.ReasonCode != tc.want {
 			t.Errorf("domain=%q addr=%q: expected %s, got reason=%s isJunk=%v",
@@ -118,7 +119,7 @@ func TestClassify_KnownDomains(t *testing.T) {
 }
 
 func TestClassify_PersonalEmail(t *testing.T) {
-	c := Classify(msg(map[string]string{}, MkEmail("jane.doe", "example.com")))
+	c := Classify(msg(map[string]string{}, defang.MkEmail("jane.doe", "example.com")))
 	if c.IsJunk {
 		t.Fatalf("personal email must not be junk, got %+v", c)
 	}
@@ -131,8 +132,8 @@ func TestExtractDomain(t *testing.T) {
 		in   string
 		want string
 	}{
-		{MkEmail("a", "github.com"), "github.com"},
-		{MkEmail("Alice", "STRIPE.com"), "stripe.com"},
+		{defang.MkEmail("a", "github.com"), "github.com"},
+		{defang.MkEmail("Alice", "STRIPE.com"), "stripe.com"},
 		{"", ""},
 	}
 	for _, tc := range cases {

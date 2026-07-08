@@ -7,8 +7,8 @@
 # (no @), which then breaks domain extraction, map-key lookups, substring
 # matching, and selection-slice equality downstream.
 #
-# The defense is to assemble strings at runtime via engine.MkEmail(local, domain)
-# (defined in internal/engine/testutil.go), which joins "@" at runtime so the
+# The defense is to assemble strings at runtime via defang.MkEmail(local, domain)
+# (defined in internal/defang/defang.go), which joins "@" at runtime so the
 # obfuscator's regex never matches the literal.
 #
 # Allowances:
@@ -52,9 +52,9 @@ if [ -n "$OFFENDERS" ]; then
   matching an email regex into the placeholder "[email protected]" (no "@")
   which breaks downstream domain extraction and equality checks.
 
-  Wrap them at runtime with engine.MkEmail(local, domain) instead, e.g.:
+  Wrap them at runtime with defang.MkEmail(local, domain) instead, e.g.:
 
-      addr := engine.MkEmail("noreply", "example.com")
+      addr := defang.MkEmail("noreply", "example.com")
 
   Or, for fixture loaders and demo commands, build the local+domain and let
   the call site join them.

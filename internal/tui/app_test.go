@@ -12,7 +12,7 @@ import (
 // mkT joins a local part and domain at runtime with "@" so the literal in
 // source cannot be rewritten by Cloudflare's email obfuscation. (Same root
 // cause / same defense as the helper in internal/engine/*_test.go; if/when
-// the project's MkEmail is lifted into a shared internal/util package this
+// the project's MkEmail now lives in the internal/defang package
 // can be deleted in favour of an import.)
 func mkT(local, domain string) string { return local + "@" + domain }
 
