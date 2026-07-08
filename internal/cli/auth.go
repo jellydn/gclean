@@ -1,21 +1,19 @@
 package cli
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"io"
 	"os"
 	"path/filepath"
+	"time"
 
 	"github.com/spf13/cobra"
+
+	"gclean/internal/gmailclient"
 )
 
-// auth.go — gclean login / logout. Until RealClient ships + OAuth lands,
-// these commands only validate credentials.json and remove token.json.
-// They never make a network call.
-
-// newLoginCmd: scaffolded OAuth flow. Verifies credentials.json exists at
-// credentialsPath() and prints setup steps if missing.
 func newLoginCmd(out, errOut io.Writer) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "login",
@@ -27,23 +25,54 @@ func newLoginCmd(out, errOut io.Writer) *cobra.Command {
 				_, _ = fmt.Fprintf(errOut, "gclean login: %s not found.\n\n", p)
 				_, _ = fmt.Fprintln(errOut, "Setup steps:")
 				_, _ = fmt.Fprintln(errOut, "  1. Create a Google Cloud Console project: https://console.cloud.google.com/")
-				_, _ = fmt.Fprintln(errOut, "  2. Enable the Gmail API and the People API.")
-				_, _ = fmt.Fprintln(errOut, "  3. Create an OAuth Desktop client.")
-				_, _ = fmt.Fprintln(errOut, "  4. Download client_secret.json and save it to "+p)
+				_, _ = fmt.Fprintln(errOut, "  2. Enable the Gmail API.")
+				_, _ = fmt.Fprintln(errOut, "  3. Create an OAuth Desktop client (type: Desktop app).")
+				_, _ = fmt.Fprintln(errOut, "  4. Download credentials.json and save it to "+p)
 				_, _ = fmt.Fprintln(errOut, "  5. Re-run `gclean login`.")
 				_, _ = fmt.Fprintln(errOut)
 				_, _ = fmt.Fprintln(errOut, "Until then, drive the pipeline with --fixtures on scan/clean/dry-run.")
 				return errors.New("credentials.json missing")
 			}
-			_, _ = fmt.Fprintf(out, "credentials.json found at %s\n", p)
-			_, _ = fmt.Fprintln(out, "OAuth flow: scaffolded only — full browser round-trip lands in session 2.")
+
+			cfg, err := gmailclient.LoadConfig(p)
+			if err != nil {
+				return fmt.Errorf("load credentials: %w", err)
+			}
+
+			server, err := gmailclient.NewAuthCodeServer()
+			if err != nil {
+				return fmt.Errorf("start callback server: %w", err)
+			}
+			defer func() { _ = server.Close() }()
+
+			authURL := cfg.AuthCodeURL("gclean-state")
+			_, _ = fmt.Fprintln(out, "Opening browser for Gmail authentication...")
+			if err := gmailclient.OpenBrowser(authURL); err != nil {
+				_, _ = fmt.Fprintf(out, "Could not open browser automatically. Open this URL manually:\n%s\n", authURL)
+			}
+
+			code, err := server.WaitForCode(5 * time.Minute)
+			if err != nil {
+				return fmt.Errorf("auth flow failed: %w", err)
+			}
+
+			tok, err := cfg.Exchange(context.Background(), code)
+			if err != nil {
+				return fmt.Errorf("exchange code: %w", err)
+			}
+
+			if err := gmailclient.SaveToken(tok); err != nil {
+				return fmt.Errorf("save token: %w", err)
+			}
+
+			tokPath := filepath.Join(filepath.Dir(credentialsPath()), "token.json")
+			_, _ = fmt.Fprintln(out, "Authentication successful. Token saved to "+tokPath)
 			return nil
 		},
 	}
 	return cmd
 }
 
-// newLogoutCmd: removes token.json. Best-effort; no error on missing file.
 func newLogoutCmd(out, errOut io.Writer) *cobra.Command {
 	return &cobra.Command{
 		Use:   "logout",
