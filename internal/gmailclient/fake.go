@@ -25,7 +25,23 @@ type FakeClient struct {
 }
 
 // NewFakeClient loads a fixture JSON file (an array of Gmail-shaped messages).
+//
+// The path is validated before opening: it must be a regular file (not a
+// directory) and must not be a symlink. os.Open follows symlinks, so without
+// this guard `--fixtures` could be pointed at an arbitrary symlinked target
+// outside the intended tree (CONCERNS.md #10). This is dev/test-only input,
+// so rejecting symlinks is acceptable.
 func NewFakeClient(path string) (*FakeClient, error) {
+	info, err := os.Lstat(path)
+	if err != nil {
+		return nil, fmt.Errorf("fake: stat %s: %w", path, err)
+	}
+	if info.Mode()&os.ModeSymlink != 0 {
+		return nil, fmt.Errorf("fake: fixtures path %s must not be a symlink", path)
+	}
+	if !info.Mode().IsRegular() {
+		return nil, fmt.Errorf("fake: fixtures path %s must be a regular file", path)
+	}
 	f, err := os.Open(path)
 	if err != nil {
 		return nil, fmt.Errorf("fake: open %s: %w", path, err)
