@@ -24,9 +24,11 @@ addr := defang.MkEmail("noreply", "example.com") // "noreply@example.com"
 
 `MkEmail` lives in `internal/defang` and is intentionally non-test code so production fixture loaders can use it too. This is the single most likely thing to trip a PR.
 
-## OAuth is NOT wired
+## OAuth and real Gmail read path
 
-Real Gmail requires `credentials.json` at `~/.config/gclean/credentials.json` (or `$GCLEAN_CREDENTIALS_PATH`). Until then, every command MUST be driven with `--fixtures`:
+Real Gmail requires `credentials.json` at `~/.config/gclean/credentials.json` (or `$GCLEAN_CREDENTIALS_PATH`). Run `gclean login` to complete the browser-based OAuth flow; the token is stored at `~/.config/gclean/token.json` by default or at `$GCLEAN_TOKEN_PATH`.
+
+`gclean scan` can then use the real Gmail client without `--fixtures`. Until the real write path is implemented, cleanup commands against a real account are not supported. Use `--fixtures` for every local end-to-end cleanup flow:
 
 ```bash
 # End-to-end local dev flow:
@@ -38,14 +40,15 @@ gclean clean --yes --fixtures testdata/fixtures/messages.json
 gclean undo  --fixtures testdata/fixtures/messages.json
 ```
 
-`RealClient` in `internal/gmailclient/real.go` is a stub — all methods return `ErrNotImplemented`. Swap at the `gmailclient.Client` interface seam.
+`RealClient.ListMessages` in `internal/gmailclient/real.go` is implemented for paginated metadata reads and classification headers. `TrashMessages`, `EmptyTrash`, and `RestoreFromTrash` still return `ErrNotImplemented`; use `FakeClient` with `--fixtures` to exercise cleanup locally. Swap implementations at the `gmailclient.Client` interface seam.
 
 ## Key env vars
 
 | Var                       | Default                             | Purpose           |
 | ------------------------- | ----------------------------------- | ----------------- |
 | `GCLEAN_DB_PATH`          | `~/.config/gclean/gclean.db`        | SQLite db path    |
-| `GCLEAN_CREDENTIALS_PATH` | `~/.config/gclean/credentials.json` | Gmail OAuth creds |
+| `GCLEAN_CREDENTIALS_PATH` | `~/.config/gclean/credentials.json` | Gmail OAuth client credentials |
+| `GCLEAN_TOKEN_PATH`       | `~/.config/gclean/token.json`       | Persisted Gmail OAuth token |
 | `GCLEAN_CONFIG_PATH`      | `~/.config/gclean/config.yaml`      | YAML rule config  |
 | `GCLEAN_UNDO_CACHE`       | `~/.config/gclean/undo-cache.json`  | Pre-trash records |
 
@@ -62,7 +65,7 @@ gclean undo  --fixtures testdata/fixtures/messages.json
 cmd/gclean/main.go         — slog setup, calls cli.Build()
 internal/cli/              — Cobra command tree (thin handlers; pipeline adapters in pipeline.go)
 internal/engine/           — classifier, protector, evaluator (DSL), planner, pipeline (stages)
-internal/gmailclient/      — Client interface + FakeClient + RealClient stub
+internal/gmailclient/      — Client interface + FakeClient + OAuth-backed RealClient
 internal/storage/          — SQLite via modernc.org/sqlite (no CGO) + undo-cache IO
 internal/config/           — YAML via yaml.v3 (not Viper)
 internal/defang/           — MkEmail (runtime email assembly, defeats obfuscation)

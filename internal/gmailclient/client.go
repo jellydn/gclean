@@ -9,7 +9,8 @@ import "gclean/internal/models"
 // Implementations:
 //
 //   - FakeClient   — fixture-driven, used for tests and local dev (no network)
-//   - RealClient   — talks to actual Gmail over HTTPS+OAuth (next session)
+//   - RealClient   — talks to actual Gmail over HTTPS+OAuth for metadata reads;
+//                    mutation methods are currently not implemented
 type Client interface {
 	// ListMessages returns messages matching `query` (same syntax as the
 	// Gmail web search bar) up to `max`. max==0 means "all".

@@ -1,79 +1,69 @@
 # STACK
 
-Technologies, frameworks, and runtime configuration that the project builds on.
+Current technology stack and local development surfaces for `gclean`.
 
-## Language & Toolchain
+## Runtime and language
 
-- **Go** `1.26.4` (`go.mod:3`) — single language for the entire project, including CLI, persistence, and TUI.
-- Build: `go build ./...` (entry point produced from `cmd/gclean/main.go`).
-- Tests: `go test ./...`. Pure-Go SQLite (`modernc.org/sqlite`) so no CGO toolchain is required.
-- Pre-commit gate: `prek` (`.pre-commit-config.yaml`) runs `go vet`, `go build`, `golangci-lint`, and the custom `scripts/lint-email-literals.sh` over staged Go files plus standard formatting/YAML hooks.
+- **Go 1.26.4** — declared in `go.mod:1-3`; all application, CLI, persistence, OAuth, and TUI code is Go.
+- **CLI executable** — `cmd/gclean/main.go` configures `log/slog`, constructs the Cobra root command, and executes it with a context.
+- **CGO-free SQLite** — `modernc.org/sqlite` is used by `internal/storage/sqlite.go`, avoiding a native SQLite toolchain.
+- **No message bodies** — `models.Message` deliberately stores metadata, headers, labels, and a snippet, but not full bodies (`internal/models/models.go:9-22`).
 
-## Direct Dependencies
+## Direct dependencies
 
-| Module                               | Version   | Where it shows up                                                    |
-| ------------------------------------ | --------- | -------------------------------------------------------------------- |
-| `github.com/spf13/cobra`             | `v1.10.2` | `internal/cli/cli.go:35` — the entire command tree (17 subcommands). |
-| `github.com/charmbracelet/bubbletea` | `v1.3.10` | `internal/tui/app.go` — TUI Model implementation (`gclean tui`).     |
-| `github.com/charmbracelet/lipgloss`  | `v1.1.0`  | `internal/tui/app.go` — TUI rendering styles.                        |
-| `gopkg.in/yaml.v3`                   | `v3.0.1`  | `internal/config/yaml.go` — YAML config parsing.                     |
-| `modernc.org/sqlite`                 | `v1.53.0` | `internal/storage/sqlite.go:14` — pure-Go SQLite driver (CGO-free).  |
-| `log/slog`                           | stdlib    | `cmd/gclean/main.go:7` — text-handler logger to stderr.              |
+| Dependency | Version | Usage |
+| --- | --- | --- |
+| `github.com/spf13/cobra` | `v1.10.2` | Root command and subcommands in `internal/cli/` |
+| `github.com/charmbracelet/bubbletea` | `v1.3.10` | Interactive sender-selection TUI in `internal/tui/app.go` |
+| `github.com/charmbracelet/lipgloss` | `v1.1.0` | TUI styling and terminal rendering |
+| `gopkg.in/yaml.v3` | `v3.0.1` | YAML config parsing through `internal/config/yaml.go` |
+| `modernc.org/sqlite` | `v1.53.0` | Pure-Go SQLite driver in `internal/storage/sqlite.go` |
+| `google.golang.org/api` | `v0.287.1` indirect in `go.mod` | Gmail API service used by `internal/gmailclient/real.go` and `oauth.go` |
+| `golang.org/x/oauth2` | indirect in `go.mod` | OAuth config, token exchange, and refresh token source |
 
-`Viper` is deliberately **not** used (`internal/config/config.go:4-9` comments explain why).
+The standard library supplies `database/sql`, `encoding/json`, `net/http`, `net/mail`, `log/slog`, `text/tabwriter`, signal handling, and filesystem access.
 
-## Indirect Dependencies (high-traffic ones)
+## Developer commands
 
-- `github.com/charmbracelet/x/{ansi,cellbuf,term}`, `github.com/charmbracelet/colorprofile` — bubbletea/lipgloss transitive deps for terminal escape sequences.
-- `modernc.org/{libc,mathutil,memory}` — sqlite driver stack.
-- `golang.org/x/{sys,text}` — sqlite + unicode support.
-- `github.com/google/uuid` — pulled in by sqlite/bubbletea.
-- `github.com/dustin/go-humanize` — size formatting; currently transitively included but not directly imported in `gclean` code (gclean ships its own `humanBytes()` at `internal/cli/cli.go:152`).
+`justfile` is the preferred command runner:
 
-Dev tooling:
-
-- `golangci-lint` (optional — `justfile` and `Makefile` skip silently when missing).
-- `pre-commit` / `prek` — local-only pre-commit hooks.
-- `just` (`justfile`) and `make` (`Makefile`) — both provide `check`/`lint`/`build`/`test`/`e2e` recipes.
-
-## Configuration Surfaces
-
-| Surface               | Loader                                                                                 | Path                                                                                                                                                                                                                                             |
-| --------------------- | -------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| **YAML rules**        | `config.Load()` (`internal/config/config.go:65`)                                       | `GCLEAN_CONFIG_PATH`, else `$XDG_CONFIG_HOME/gclean/config.yaml`, else `~/.config/gclean/config.yaml`. Auto-creates `defaultConfig` on first run; auto-create is also absorbed by `gclean dev`'s watch loop (see `internal/cli/dev.go:124-139`). |
-| **SQLite DB**         | `storage.Open()` (`internal/storage/sqlite.go:46`)                                     | `GCLEAN_DB_PATH`, else `~/.config/gclean/gclean.db`.                                                                                                                                                                                             |
-| **OAuth credentials** | `cli.credentialsPath()` (`internal/cli/cli.go:90`)                                     | `GCLEAN_CREDENTIALS_PATH`, else `~/.config/gclean/credentials.json`.                                                                                                                                                                             |
-| **Undo cache**        | `cli.defaultCache()` (`internal/cli/pipeline.go`)                                      | `GCLEAN_UNDO_CACHE`, else `~/.config/gclean/undo-cache.json`. Cache IO itself is `storage.SaveUndoCache`/`LoadUndoCache` (`internal/storage/undocache.go`).                                                                                      |
-| **Dev-mode fixtures** | `--fixtures PATH` flag on `gclean dev`                                                 | `testdata/fixtures/messages.json` (40-message corpus, relative to CWD).                                                                                                                                                                          |
-| **Fixture corpus**    | `--fixtures PATH` flag on `scan`/`clean`/`dry-run`/`undo` (`internal/cli/pipeline.go`) | Bundled `testdata/fixtures/messages.json` (corrupted by Cloudflare obfuscation; integration tests synthesize their own).                                                                                                                         |
-
-## Environment Variables That Gate Behavior
-
-| Var                       | Purpose                                                                                                            |
-| ------------------------- | ------------------------------------------------------------------------------------------------------------------ |
-| `GCLEAN_DB_PATH`          | Override SQLite path; commonly set to a tempdir for sandboxed runs (`just e2e`).                                   |
-| `GCLEAN_CREDENTIALS_PATH` | Where to find `credentials.json` for OAuth. Until present, `--fixtures` is the only path that drives the pipeline. |
-| `GCLEAN_CONFIG_PATH`      | Override config file location; honored by `gclean dev` watch loop (`internal/cli/dev.go:124`).                     |
-| `GCLEAN_UNDO_CACHE`       | Override undo-cache path.                                                                                          |
-| `XDG_CONFIG_HOME`         | Standard; config loader falls back to it before `~/.config`.                                                       |
-
-## Build / Run / Test Entry Points
-
-```
-bin/source : cmd/gclean/main.go
-build      : go build ./...                        (or `just build`, `make build`)
-vet        : go vet ./...                          (or `just vet`, `make vet`)
-test       : go test ./...                         (or `just test`, `make test`)
-check      : just check                            = vet + build + lint + test
-e2e (dev)  : just e2e fixtures=testdata/...        = scan → stats → dry-run → clean → undo end-to-end
-one-shot   : go run ./cmd/gclean dev --watch=false --fixtures testdata/fixtures/messages.json
-watch      : go run ./cmd/gclean dev               (Ctrl+C to exit)
+```text
+just check          # vet + build + lint + test
+just check-quick    # vet + build + test
+just test-pkg pkg="internal/engine/"
+just test-integration
+just e2e
 ```
 
-## Schema / Migrations
+Equivalent Make targets are in `Makefile`: `lint-emails`, `lint`, `build`, `test`, and `vet`. `golangci-lint` is optional in the aggregate lint recipe and is skipped when unavailable.
 
-SQLite schema is **inline** in `internal/storage/sqlite.go:22` — `CREATE TABLE IF NOT EXISTS messages …` plus four indexes (`idx_messages_sender`, `_date`, `_junk`, `_verdict`). No migration table, no version column. Greenfield scaffold (see `CONCERNS.md #9`).
+## Validation and repository hooks
 
-## File-Watching Implementation Choice
+- `go vet ./...`
+- `go build ./...`
+- `go test ./...`
+- `scripts/lint-email-literals.sh` — rejects raw email literals in non-test Go/JSON source.
+- `.pre-commit-config.yaml` runs standard whitespace/YAML/large-file hooks plus Go vet, build, golangci-lint, and the email-literal script.
+- `.github/workflows/lint-emails.yml` runs the email-literal check on pushes to `main` and pull requests.
 
-`gclean dev` watch mode uses **polling** (2s default interval, configurable via `--interval`) — see `internal/cli/dev.go:25-26` for the rationale. **Not fsnotify** — would be a better fit for sub-second feedback but adds a dep + moving part for a dev-only tool. Polling is sufficient below human iteration speed.
+## Configuration and runtime paths
+
+| Environment variable | Default | Purpose |
+| --- | --- | --- |
+| `GCLEAN_DB_PATH` | `~/.config/gclean/gclean.db` | SQLite metadata database |
+| `GCLEAN_CONFIG_PATH` | `$XDG_CONFIG_HOME/gclean/config.yaml` or `~/.config/gclean/config.yaml` | YAML rules |
+| `GCLEAN_CREDENTIALS_PATH` | `~/.config/gclean/credentials.json` | Google OAuth client credentials |
+| `GCLEAN_TOKEN_PATH` | `~/.config/gclean/token.json` | Persisted OAuth token (`internal/gmailclient/oauth.go`) |
+| `GCLEAN_UNDO_CACHE` | `~/.config/gclean/undo-cache.json` | Pre-trash records for undo |
+
+`config.Load()` creates the default YAML configuration on first use (`internal/config/config.go:65-90`). SQLite schema creation happens during `storage.Open()` (`internal/storage/sqlite.go:22-55`).
+
+## Build status and implementation boundary
+
+The local fixture pipeline is end-to-end: fake Gmail input → classification → SQLite → planning → reporting. Real Gmail authentication is implemented through `gclean login`, and `RealClient.ListMessages` fetches metadata through the Gmail API (`internal/gmailclient/real.go:23-95`). The mutating RealClient methods still return `ErrNotImplemented` (`internal/gmailclient/real.go:98-106`), so production Trash/restore/purge is not complete.
+
+## Design choices
+
+- YAML rather than Viper: `internal/config/config.go:5-7` explicitly avoids Viper's larger dependency graph.
+- Polling rather than filesystem notifications: `internal/cli/dev.go:18-25` uses a configurable two-second mtime poll for the development watcher.
+- Runtime email assembly through `defang.MkEmail`: `internal/defang/defang.go` protects source strings from the repository's email-obfuscation failure mode.

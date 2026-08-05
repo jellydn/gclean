@@ -1,7 +1,7 @@
 // Package cli wires gclean's Cobra command tree. Subcommand handlers live
 // in per-group files:
 //
-//	auth.go      — login / logout                   (this is a scaffolded stub)
+//	auth.go      — login / logout                   (OAuth browser flow)
 //	pipeline.go  — scan / stats / dry-run / clean / purge / undo
 //	              as thin adapters over engine.Pipeline (undo-cache path only)
 //	insights.go  — sender / attachments / newsletters / receipts

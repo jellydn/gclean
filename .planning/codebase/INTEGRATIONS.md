@@ -1,61 +1,73 @@
 # INTEGRATIONS
 
-Third-party / external surfaces the project talks to. The project is deliberately **deeply stubbed** at the Gmail boundary — every interface below is either scaffold-first or local-only.
+External systems, local persistence surfaces, and integration seams in the current `gclean` implementation.
 
-## Gmail API (NOT YET WIRED)
+## Google Gmail API
 
-- **Status**: Stubbed. The OAuth browser flow, and the `google.golang.org/api/gmail/v1` wiring, are deferred to a later session.
-- **Interface seam**: `gmailclient.Client` (`internal/gmailclient/client.go:16`) — four methods: `ListMessages(query, max)`, `TrashMessages(ids)`, `EmptyTrash()`, `RestoreFromTrash(ids)`.
-- **Implementation that runs today**: `gmailclient.FakeClient` (`internal/gmailclient/fake.go`). Loads a JSON fixture file, mutates in-memory trash state. No network.
-- **Implementation scaffolded, not active**: `gmailclient.RealClient.NewRealClient` (`internal/gmailclient/real.go:23`) accepts a path string and returns `ErrNotImplemented` from every method until session 2.
-- **OAuth scopes called out in PRD/AGENTS.md**: `gmail.readonly` + `gmail.modify` only. Localhost callback flow.
+**Status: partially implemented.**
 
-## Local Filesystem
+- Interface boundary: `gmailclient.Client` in `internal/gmailclient/client.go:8-31`.
+- Real implementation: `internal/gmailclient/real.go:21-52` constructs an authenticated Gmail service using credentials and a persisted OAuth token.
+- Read path: `RealClient.ListMessages` lists message IDs, then fetches `metadata` format with `From`, `To`, `Cc`, `Subject`, `Date`, `List-Unsubscribe`, `List-ID`, `Precedence`, and `Auto-Submitted` headers (`internal/gmailclient/real.go:58-95`).
+- Mapping: `mapGmailMessage` converts Gmail API data into `models.Message`, parses sender addresses with `net/mail`, combines To/Cc recipients, maps labels, and records the estimated size (`internal/gmailclient/real.go:109-160`).
+- Mutation gap: `TrashMessages`, `EmptyTrash`, and `RestoreFromTrash` return `ErrNotImplemented` (`internal/gmailclient/real.go:98-106`).
+- Fake implementation: `internal/gmailclient/fake.go` loads a local JSON array, filters basic Gmail-style queries, and models Trash/restore in memory.
 
-| Path                                             | Owner                                                                                          | Purpose                                                                                                            |
-| ------------------------------------------------ | ---------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------ |
-| `~/.config/gclean/config.yaml`                   | `config.Load()` (`internal/config/config.go:65`)                                               | YAML rules. Auto-created on first run; auto-create is also polled by `gclean dev` (`internal/cli/dev.go:124-139`). |
-| `<GCLEAN_DB_PATH or ~/.config/gclean/gclean.db>` | `storage.Open()` (`internal/storage/sqlite.go:46`)                                             | Local SQLite metadata store. Created/opened on `gclean scan` / `dev` / etc.                                        |
-| `~/.config/gclean/undo-cache.json`               | `storage.SaveUndoCache()` (`internal/storage/undocache.go`), written by the engine Apply stage | Pre-trash records so `gclean undo` can restore them within the 30-day Gmail window.                                |
-| `~/.config/gclean/tui-selection.json`            | `cli.saveSelection()` (`internal/cli/cli.go:589`)                                              | Output of `gclean tui` Bubble Tea UI; written under `selectors` + `ts` keys.                                       |
-| `~/.config/gclean/token.json` (would be)         | `gmailclient.RealClient` later                                                                 | OAuth token (not yet written).                                                                                     |
-| `~/.config/gclean/credentials.json`              | user-supplied                                                                                  | OAuth client_secret from Google Cloud Console — required for real Gmail, absent in scaffold.                       |
+## OAuth
 
-The `defaultCache` / `credentialsPath` / `storePath` helpers in `internal/cli/cli.go` centralize path resolution and respect the override env vars listed in `STACK.md` so test code can sandbox everything into a `$(mktemp -d)`.
+OAuth is implemented as a local desktop flow:
 
-## YAML Config (Internal DSL)
+- Credentials are loaded by `LoadConfig` in `internal/gmailclient/oauth.go:38-56`.
+- Scopes are `gmail.readonly` and `gmail.modify` (`internal/gmailclient/oauth.go:27`).
+- The callback server listens on `localhost:8080` (`internal/gmailclient/oauth.go:20-29`), captures an authorization code, and supports timeout/shutdown.
+- `gclean login` starts the server, opens the browser, exchanges the code, and persists the token (`internal/cli/auth.go:17-73`).
+- Tokens are written with mode `0600` and can be redirected with `GCLEAN_TOKEN_PATH` (`internal/gmailclient/oauth.go:31-79`).
+- `gclean logout` removes the token next to the configured credentials path (`internal/cli/auth.go:76-89`).
 
-- Format: `gopkg.in/yaml.v3` (`internal/config/yaml.go:3`).
-- Schema (`internal/config/config.go:41`): `Document{Keep KeepConfig; Delete []string; Archive []string; Ignore []string}` with `KeepConfig` (`internal/engine/protector.go:21`) carrying boolean toggles + `recent_days`.
-- Prelude (`defaultConfig` in `internal/config/config.go:13`): ships with `keep.contacts/replied/starred/important/sent_by_user/recent_days:365` and three example delete rules + one archive + one ignore.
-- DSL parser (`internal/engine/evaluator.go`): predicates `has:`, `category:`, `from:`, `older_than:Xd`, `larger_than:XB|KB|MB|GB` joined by whitespace or comma.
+The OAuth flow depends on a Google Cloud project with the Gmail API enabled and a desktop OAuth client credentials file; the CLI prints setup guidance when credentials are missing.
 
-## SQLite via modernc.org/sqlite
+## Local SQLite persistence
 
-- Driver import: `_ "modernc.org/sqlite"` (`internal/storage/sqlite.go:14`).
-- CGO-free — important for cross-compiles and CI portability.
-- Schema detailed in `STACK.md`. Storage layer exposes `Upsert`, `SetVerdict`, `AllClassified`, `DeleteMessageIDs`, `MarkTrashed`, `RestoreTrashed`, `CountAll`, `Aggregations` (one scan → StatsReport + BySender + SendersSafe), `LargestAttachments`, `SaveUndoCache`, `LoadUndoCache`.
+`modernc.org/sqlite` backs `internal/storage/sqlite.go`. `storage.Open()` creates the `messages` table and indexes for sender, date, junk status, and verdict. The store persists message metadata and planning state, not message bodies.
 
-## OAuth2 (scaffolded, not active)
+Primary storage operations:
 
-- Endpoints: Google OAuth2 authorization + token exchange + refresh. Both flows would land in `internal/gmailclient/real.go`'s future incarnation.
-- Login entry point: `cli.newLoginCmd` (`internal/cli/cli.go:184`) currently checks `credentials.json` exists and prints setup steps if missing — it does **not** start a browser flow yet.
-- `cli.newLogoutCmd` removes `token.json` only.
+- `Upsert`, `AllClassified`, `SetVerdict`
+- `MarkTrashed`, `RestoreTrashed`
+- `Aggregations`, `LargestAttachments`
+- `SaveUndoCache`, `LoadUndoCache` (the latter two are JSON files, not SQLite tables)
 
-## Bubble Tea / Lip Gloss (TUI)
+There is no migration table; schema setup is an inline `CREATE TABLE IF NOT EXISTS` script (`internal/storage/sqlite.go:22-41`).
 
-- Models live in `internal/tui/app.go`. The `gclean tui` command (`internal/cli/cli.go:622`) reads sender rows from SQLite, hands them to `tui.Run(tui.NewModel(safeties))`, and persists the selection via `saveSelection`.
-- Keymap (declared in `--help`): arrows/j/k move, space toggle, a select-all junk, n clear, enter commit, q quit.
+## Filesystem integrations
 
-## `gclean dev` Watch Loop (developer-facing integration with the local FS)
+| Surface | Owner | Purpose |
+| --- | --- | --- |
+| `GCLEAN_CONFIG_PATH` / XDG config path | `internal/config/config.go` | User-editable YAML rules and protection profile |
+| `GCLEAN_DB_PATH` | `internal/cli/cli.go`, `internal/storage/sqlite.go` | Local metadata and verdict store |
+| `GCLEAN_CREDENTIALS_PATH` | `internal/cli/cli.go` | User-supplied Google OAuth client JSON |
+| `GCLEAN_TOKEN_PATH` | `internal/gmailclient/oauth.go` | OAuth token persistence |
+| `GCLEAN_UNDO_CACHE` | `internal/cli/pipeline.go`, `internal/storage/undocache.go` | Integrity-checked pre-trash records |
+| `~/.config/gclean/tui-selection.json` | `internal/cli/insights.go` | Experimental TUI selection output |
+| `--fixtures PATH` | `internal/gmailclient/fake.go` | Local Gmail-shaped fixture input |
 
-- Polls both the fixture file (default `testdata/fixtures/messages.json`) and the config file (default `~/.config/gclean/config.yaml`) for mtime changes (`internal/cli/dev.go:97-180`).
-- Default interval: 2s (`-d time.Second * 2`).
-- Non-fatal missing files: log once per state transition, keep polling (`wasFixtureMissing`, `wasConfigMissing` state vars).
-- Config auto-create absorbed: `config.Load()` would write the file during the first iteration's `dry-run`; the watch loop pre-sets `lastConfigMtime` on first valid sight so the auto-created mtime isn't misread as a user-driven change.
-- Triggers a `scan + stats + dry-run` pipeline (via `Build() + SetArgs() + Execute()`) on either file's mtime change.
+## Configuration DSL
 
-## No External APIs Today
+`internal/config/config.go` parses YAML into `Document`; `Document.Compile()` converts delete/archive strings into `engine.Rule` values. `internal/engine/evaluator.go` supports:
 
-- No telemetry, no analytics, no log-shipping, no payment, no email-sending, no LLM APIs.
-- The only network calls gclean can currently make are inside `RealClient` (which always returns `ErrNotImplemented`).
+- `has:<header>`
+- `subject:<substring>`
+- `category:<name>`
+- `from:<substring>`
+- `older_than:<Nd>`
+- `larger_than:<NB|KB|MB|GB>`
+
+Predicates separated by whitespace or commas are ANDed. Unknown predicates do not match.
+
+## TUI integration
+
+`internal/tui/app.go` wraps Bubble Tea and Lip Gloss. `gclean tui` reads `storage.SenderSafety` rows from SQLite, preselects senders with delete candidates, and saves selected sender addresses through `saveSelection` (`internal/cli/meta.go:114-158`, `internal/cli/insights.go:20-36`). The selection file is not yet consumed by `gclean clean`.
+
+## No other external services
+
+The repository contains no telemetry, analytics, payments, email-sending, LLM, webhook, or People API integration. `Sender.IsContact` is modeled and protected by the engine, but contact enrichment is not wired.
