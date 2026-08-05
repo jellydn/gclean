@@ -4,3 +4,4 @@
 # Local config / data (runtime artifacts, not source)
 *.db
 undo-cache.json
+/bin/gclean
