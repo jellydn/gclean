@@ -52,7 +52,7 @@ gclean undo  --fixtures testdata/fixtures/messages.json
 ## Safety invariants
 
 - `--yes` required before `clean` or `purge` modifies state
-- Planner refuses to delete a non-junk message even if a delete rule matches (PRD §15, `internal/engine/planner.go` ~L99)
+- Planner refuses to delete a non-junk message even if a delete rule matches (PRD §15, `internal/engine/planner.go:99-107`)
 - `clean` moves to Trash (recoverable); only `purge` empties Trash permanently
 - Undo cache (`~/.config/gclean/undo-cache.json`) preserves pre-trash records
 
