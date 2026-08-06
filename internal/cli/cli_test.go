@@ -35,6 +35,7 @@ func TestBuild_Help(t *testing.T) {
 func TestScanCommand_DevFixturePipeline(t *testing.T) {
 	tmp := t.TempDir()
 	t.Setenv("GCLEAN_DB_PATH", tmp+"/gclean.db")
+	t.Setenv("GCLEAN_UNDO_CACHE", tmp+"/undo-cache.json")
 
 	var out bytes.Buffer
 	cmd := Build(&out, &out)

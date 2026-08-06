@@ -166,16 +166,16 @@ func (p *Pipeline) applyTrash(pl *Pipeline) error {
 		})
 	}
 	if len(ids) > 0 {
+		if pl.CachePath != "" {
+			if err := storage.SaveUndoCache(pl.CachePath, toTrash); err != nil {
+				return fmt.Errorf("save undo cache: %w", err)
+			}
+		}
 		if err := pl.Client.TrashMessages(ids); err != nil {
 			return fmt.Errorf("trash: %w", err)
 		}
 		if err := pl.Store.MarkTrashed(ids); err != nil {
 			return fmt.Errorf("mark trashed: %w", err)
-		}
-		if pl.CachePath != "" {
-			if err := storage.SaveUndoCache(pl.CachePath, toTrash); err != nil {
-				_, _ = fmt.Fprintf(pl.ErrOut, "warning: couldn't save undo cache: %v\n", err)
-			}
 		}
 	}
 	pl.trashedIDs = ids

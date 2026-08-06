@@ -56,7 +56,7 @@ Current limitations, risks, and fragile areas. This document describes the repos
 
 - **Location:** `internal/engine/pipeline.go:143-190`
 - Applying a clean performs Gmail mutation, SQLite deletion, and cache writing as separate operations. A process crash or API/storage failure between them can leave those systems out of sync.
-- The cache warning is intentionally non-fatal, which favours continued cleanup but can weaken undo guarantees. Real Gmail mutation should define rollback/reconciliation behavior explicitly.
+- Cache persistence now fails before Gmail mutation and refuses to overwrite an existing undo batch. A partial Gmail mutation can still leave the cache cohort broader than the messages actually moved; the adapter reports the failing position, but a durable succeeded-ID reconciliation state is still needed.
 
 ### 9. Planner uses current wall clock internally
 
