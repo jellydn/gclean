@@ -17,7 +17,14 @@ import (
 )
 
 var (
-	oauthListenAddr = "127.0.0.1:8080"
+	// Loopback callback address. Must be `localhost`, NOT `127.0.0.1`:
+	// Google validates the redirect_uri hostname against the URIs
+	// registered on the OAuth client (Desktop clients ship with
+	// `http://localhost` in credentials.json). A 127.0.0.1 mismatch is
+	// rejected with the generic "400. That's an error" page before the
+	// code callback ever fires. The port is ignored for loopback
+	// addresses, so the unregistered `:8080` suffix is fine.
+	oauthListenAddr = "localhost:8080"
 	oauthScopes     = []string{gmail.GmailReadonlyScope, gmail.GmailModifyScope}
 )
 

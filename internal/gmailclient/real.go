@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net/mail"
 	"strings"
 	"time"
@@ -52,7 +53,7 @@ func NewRealClient(credentialsPath string) (*RealClient, error) {
 }
 
 // ErrNotImplemented is returned by trash-mutating methods until Milestone 2.
-var ErrNotImplemented = errors.New("gmailclient.RealClient: not implemented; trash operations ship in the next session")
+var ErrNotImplemented = errors.New("gmailclient.RealClient: Gmail mutation operations are not implemented")
 
 func (r *RealClient) ListMessages(query string, max int) ([]*models.Message, error) {
 	var out []*models.Message
@@ -66,22 +67,30 @@ func (r *RealClient) ListMessages(query string, max int) ([]*models.Message, err
 		if err != nil {
 			return nil, fmt.Errorf("list messages: %w", err)
 		}
+		slog.Info("listed page", "listed", len(resp.Messages), "fetched_so_far", len(out))
 		for _, m := range resp.Messages {
 			if max > 0 && len(out) >= max {
 				return out, nil
 			}
-			full, err := r.service.Users.Messages.Get("me", m.Id).Format("metadata").MetadataHeaders("From", "To", "Cc", "Subject", "Date").Do()
+			full, err := r.service.Users.Messages.Get("me", m.Id).Format("metadata").MetadataHeaders(
+				"From", "To", "Cc", "Subject", "Date",
+				"List-Unsubscribe", "List-ID", "Precedence", "Auto-Submitted",
+			).Do()
 			if err != nil {
 				return nil, fmt.Errorf("get message %s: %w", m.Id, err)
 			}
 			msg := mapGmailMessage(full)
 			out = append(out, msg)
+			if len(out)%100 == 0 {
+				slog.Info("fetched metadata", "fetched_so_far", len(out))
+			}
 		}
 		if resp.NextPageToken == "" {
 			break
 		}
 		pageToken = resp.NextPageToken
 	}
+	slog.Info("list complete", "total", len(out))
 	return out, nil
 }
 

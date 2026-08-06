@@ -1,109 +1,71 @@
 # TESTING
 
-Testing framework, patterns, structure, and known gaps.
+Testing framework, current inventory, patterns, and known coverage gaps.
 
-## Framework
+## Framework and commands
 
-- **stdlib `testing`** only. No testify, no gomock, no assertion library — `t.Errorf` / `t.Fatalf` / `t.Run` directly.
-- CI: `go test ./...` runs from `justfile` and pre-commit hooks. No separate test runner.
-- Race detector: project does not yet run `go test -race` by default — bug fix #1 if any concurrent path proves flaky.
+- Tests use only Go's standard `testing` package; there is no testify, gomock, or external assertion framework.
+- Full suite: `go test ./...`.
+- Fast project gate: `just check-quick` (`go vet`, `go build`, `go test`).
+- Default gate: `just check` adds the email-literal lint and optional golangci-lint.
+- Focused packages: `go test ./internal/engine/` and the CLI integration command in `justfile`.
+- The project does not enforce coverage and does not run the race detector by default.
 
-## Test Inventory (current)
+## Test inventory
 
-```
-internal/cli/cli_test.go
-  Line 20:  TestBuild_Help
-  Line 35:  TestScanCommand_DevFixturePipeline
-  Line 86:  TestCleanCommand_RefusesWithoutYes
-  Line 110: TestDemoCommand_RendersExpectedOutput
-  Line 199: TestSenderCommand_SyntheticFixturePipeline_ShowsExpectedSenders
-  Line 338: TestDevCommand_OneShotMode_RendersPipeline
+- `internal/engine/classifier_test.go` — header, noreply, vendor-domain, category, personal-message, domain extraction, and header lookup behavior.
+- `internal/engine/protector_test.go` — starred, recent, contact, whitelist, and sent-message protection.
+- `internal/engine/evaluator_test.go` — rule parsing, comma tolerance, duration/size parsing, matching, and empty-rule behavior.
+- `internal/engine/planner_test.go` — delete-only-junk safety, keep precedence, ignored domains, protection precedence, and archive decisions.
+- `internal/gmailclient/fake_test.go` — fixture-free fake listing, query matching, trash, restore, and trashed-ID tracking.
+- `internal/gmailclient/real_test.go` — missing credential handling, valid client construction from temporary credentials/token files, and mutation stubs.
+- `internal/cli/cli_test.go` — root help registration, scan/stats/dry-run/clean integration, `--yes` refusal, demo output, synthetic sender pipeline, fixture integrity, and `dev --watch=false`.
+- `internal/tui/app_test.go` — selection defaults, keyboard navigation, toggling, select-all/clear, commit/cancel, empty rows, resize, and rendered views.
 
-internal/tui/app_test.go (293 lines)
-internal/gmailclient/fake_test.go (53 lines)
-internal/engine/classifier_test.go (154 lines)
-internal/engine/evaluator_test.go (120 lines)
-internal/engine/planner_test.go (148 lines)
-internal/engine/protector_test.go (84 lines)
-```
+## Test patterns
 
-## Patterns
+### Pure engine tests
 
-### Engine tests (unit, pure)
+Engine tests construct `models.Message` and `models.Classified` values directly. They assert exact verdicts, reason codes, and report counts. Date-based tests choose dates far enough from the current time to avoid boundary instability.
 
-- All assertions treat `time.Now()` as out-of-scope. `Protect`'s `recent_days: N` rule uses `time.Now()` directly — when testing recency the fixture `Date` is set so the case is decision-deterministic regardless of clock.
-- Helper: `defang.MkEmail(local, domain)` is used for every Sender.Email in test fixtures and demo data — assembly-time `@` defeats Cloudflare obfuscation.
+Email addresses in source are constructed with `defang.MkEmail` or a runtime join to avoid the repository's source-obfuscation issue.
 
-### CLI tests (integration)
+### CLI integration tests
 
-Pattern:
+The canonical pattern is:
 
-1. Build the CLI with `bytes.Buffer` capture: `out, errOut := &bytes.Buffer{}, &bytes.Buffer{}; root := cli.Build(out, errOut)`.
-2. Inject flags via `root.SetArgs([]string{...})`.
-3. Create a sandboxed `GCLEAN_DB_PATH`: `t.Setenv("GCLEAN_DB_PATH", filepath.Join(t.TempDir(), "gclean.db"))`.
-4. Build a synthetic JSON fixture in `t.TempDir()` using an inline struct with `json:"..."` tags matching the expected shape and `defang.MkEmail` for every email.
-5. Drive via `root.Execute()`.
-6. Assert substrings in `out.String()` (and `errOut.String()` for the negative case).
+1. `t.TempDir()` for all runtime state.
+2. `t.Setenv("GCLEAN_DB_PATH", ...)` to sandbox SQLite.
+3. Construct a temporary JSON fixture when sender diversity matters.
+4. Build through `cli.Build(&out, &errOut)`.
+5. Set arguments with `cmd.SetArgs(...)`.
+6. Call `cmd.Execute()` and assert user-visible output.
 
-### TestBuild_Help (registration lock)
+This intentionally exercises the production chain rather than calling internal helpers directly. `TestBuild_Help` also acts as a registration lock for key commands.
 
-Iterates a curated substring list — currently `login, logout, scan, stats, dry-run, clean, undo, purge, dev` — and asserts each appears in the root command's `--help` output. This locks `Build()`'s `AddCommand` list — a future refactor that drops a registered subcommand fails the test loudly. When adding a new subcommand, extend the list.
+### TUI tests
 
-### TestSenderCommand_SyntheticFixturePipeline_ShowsExpectedSenders (the synthetic-fixture canonical pattern)
+`internal/tui/app_test.go` calls `Model.Update` directly with Bubble Tea messages and promotes the interface result back to the concrete `Model`. Rendering tests strip ANSI escape sequences before matching visible text.
 
-This test was added because the on-disk `testdata/fixtures/messages.json` is itself obfuscation-corrupt. The test:
+### OAuth/Gmail tests
 
-1. Synthesizes 5 sample sender entries inline (each row has its own `defang.MkEmail`-built email).
-2. Marshals to JSON, writes to `t.TempDir()/messages.json`.
-3. Drives `gclean scan --fixtures <tempfile>` (full FakeClient chain).
-4. Runs `gclean sender`.
-5. Asserts: 5 expected addresses present, 3-column header regex matches the rendered output, row count == len(samples).
+Real-client tests avoid network calls. They verify construction from temporary credential/token JSON and document that mutation methods currently return `ErrNotImplemented`. The fake client provides all local mutation behavior needed for fixture-driven tests.
 
-Tracks the on-disk-getting-corrupted gotcha in `.plans/implement-notes.md`.
+## Current coverage gaps
 
-### TestDevCommand_OneShotMode_RendersPipeline
+- No live Gmail integration test or network contract test for `ListMessages`/`mapGmailMessage`.
+- No end-to-end real OAuth browser callback test; callback behavior is unit-testable but currently covered only indirectly by construction/login code.
+- Real `TrashMessages`, `EmptyTrash`, and `RestoreFromTrash` are stubs, so no real mutation test exists.
+- `gclean dev` watch mode, signal handling, mtime transitions, and missing/reappearing files are not deterministically tested; only one-shot mode is covered.
+- `gclean purge`, `undo` integrity failure paths, and TUI-selection-to-clean behavior lack complete CLI integration coverage.
+- No coverage threshold, race test, fuzz test, or benchmark is wired into the project gate.
+- The email-literal shell script is not tested from Go; it is validated by CI and pre-commit execution.
 
-Smoke-tests `gclean dev --watch=false`:
+## Adding tests
 
-1. Inline synthetic fixture in `t.TempDir()`.
-2. Sets `GCLEAN_DB_PATH` to `t.TempDir()/gclean.db`.
-3. Drives `["dev", "--fixtures", tmpfix, "--watch=false"]`.
-4. Asserts that the output contains the three expected sections: `Scanned N messages.`, `Total messages`, `Safe to delete`. Watch mode is **intentionally not tested**.
-
-### TestScanCommand_DevFixturePipeline
-
-The legacy integration test referenced in `justfile` and `just test-integration`. Drives the full scan→stats→dry-run pipeline end-to-end.
-
-### TestCleanCommand_RefusesWithoutYes
-
-Negative case: `gclean clean` without `--yes` fails with `errors.New("confirmation required")`.
-
-### TestDemoCommand_RendersExpectedOutput
-
-Drains a `bytes.Buffer` from `gclean demo` and asserts the table headers + at least one sample row.
-
-## Untested Paths (Deliberate)
-
-- `gmailclient.RealClient` is **deliberately not tested**. Every method returns `ErrNotImplemented`; tests would be tautological.
-- `gclean dev` watch-mode loop is **intentionally not tested**. The polling + SIGINT/cancel + state-transition behavior is hard to assert deterministically without flakiness (filesystem mtime, signal injection). Tests cover only `--watch=false` one-shot mode. The watch loop invariants can be verified by hand-running `gclean dev` against a fixture and editing it.
-
-## Coverage
-
-There is **no enforced coverage target**. `go test -cover` is not wired into `just check` or pre-commit. The engine tests exercise every documented classification path (noreply prefix, vendor domain matches, header signals, Gmail categories), and every planner verdict branch (ignored, protected, keep, archive, delete-with-junk, delete-without-junk refusal, default keep).
-
-## What's NOT Covered
-
-- `clean` and `purge` roundtrip against the FakeClient — IDs flow through TrashedStates but not message bodies. End-to-end smoke is wired through `cli_test.go` for the dev-fixture path.
-- `gclean rules` and `gclean config --op show` were hand-tested against the bundled fixture's `defaultConfig`. Quick-win: add `TableDriven` parse-of-config tests.
-- `gclean purge` does not have a CLI integration test (it's state-changing without an undo; tested implicitly via the e2e `just e2e` recipe).
-- The `scripts/lint-email-literals.sh` shell script has no Go-side coverage. A `lint_test.go` smoke test under a new `internal/scripts/scripts_test.go` could `os/exec` the script with a deliberately-broken fixture and assert exit=1 — not yet done.
-
-## Conventions for New Tests
-
-1. Place unit tests next to the source file with the same `_test.go` suffix.
-2. Place integration tests in `internal/cli/cli_test.go` (single shared file, since the CLI surface is one package).
-3. Name tests with a verb phrase: `TestX_DoesY_WhenZ` or `TestX_SubjectsY` (matches `TestDevCommand_OneShotMode_RendersPipeline`, `TestSenderCommand_SyntheticFixturePipeline_ShowsExpectedSenders`).
-4. Add a synthetic inline fixture JSON for any CLI integration test that needs fixtures — do not call `os.ReadFile("testdata/fixtures/messages.json")`. Always build emails via `defang.MkEmail`.
-5. Use `t.Setenv("GCLEAN_DB_PATH", ...)` rather than `os.Setenv` so the env is restored on `t.Cleanup` automatically.
-6. Always exercise the production chain in CLI tests (`cli.Build` + `SetArgs` + `Execute`) — don't reach into the package-internal helpers.
-7. When adding a new subcommand, extend `TestBuild_Help`'s substring list so the registration is locked.
+- Place unit tests beside the implementation with the same package and `_test.go` suffix.
+- Keep engine tests table-driven and I/O-free.
+- Put CLI integration tests in `internal/cli/cli_test.go` unless a new package boundary makes a separate file clearer.
+- Use runtime email assembly and synthetic fixtures rather than embedding fragile source literals.
+- Assert safety behavior and user-visible output, not private implementation details.
+- When adding a command, extend `TestBuild_Help`; when adding a planner branch, add a focused verdict/reason test.

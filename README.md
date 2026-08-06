@@ -16,13 +16,31 @@ This scaffold implements the **local pipeline end-to-end against fixture data**:
 - `gclean dry-run` walks the keep→archive→delete plan with the §15
   "refuse to delete non-junk even when a delete rule matches" safety invariant.
 - `gclean clean --yes --fixtures …` moves the delete cohort to Trash
-  (in-memory for the FakeClient, real Gmail once OAuth lands).
-- `gclean purge --yes` empties Trash. `gclean undo` restores the last clean batch.
+  in-memory through the FakeClient. Real Gmail mutation remains disabled until
+  the write path is implemented.
+- `gclean purge --yes` empties Trash. `gclean undo` restores the last clean batch
+  when using the fixture client.
 
-OAuth + real Gmail is intentionally **not yet wired**. Until `credentials.json` is
-present and `gclean login` runs the full OAuth dance, `--fixtures` drives the
-end-to-end pipeline locally. The seam is `internal/gmailclient.Client` — swap the
-fake for a real implementation and the rest of the codebase doesn't change.
+OAuth login and real Gmail read support are now implemented. Run `gclean login`
+to authorize a desktop OAuth client, then `gclean scan` can fetch Gmail metadata
+without `--fixtures`. The real client currently supports listing and classifying
+messages only; `clean`, `undo`, and `purge` still return a not-implemented error
+when pointed at real Gmail. The seam is `internal/gmailclient.Client`, so the
+fixture client remains available for safe local end-to-end testing.
+
+For real Gmail setup, provide `credentials.json` at
+`~/.config/gclean/credentials.json` or set `GCLEAN_CREDENTIALS_PATH`, run
+`gclean login`, and use `GCLEAN_TOKEN_PATH` to override the token location when
+needed. Tokens are stored with restrictive permissions.
+
+The real metadata scan requests the headers used by classification, including
+`List-Unsubscribe`, `List-ID`, `Precedence`, and `Auto-Submitted`.
+
+The local fixture workflow remains the recommended way to exercise cleanup
+until the real Gmail write path is complete.
+
+The seam is `internal/gmailclient.Client` — the fake and real implementations
+can be swapped without changing the engine or storage layers.
 
 ## Build & test
 
@@ -55,9 +73,26 @@ gclean undo  --fixtures testdata/fixtures/messages.json
 
 # Experimental interactive UI: per-sender checkbox list with safe-to-delete counts.
 # Press Space to toggle, Enter to commit, q to quit. Selection is written to
-# ~/.config/gclean/tui-selection.json (wiring into `gclean clean` next session).
+# ~/.config/gclean/tui-selection.json (the selection is currently advisory).
 gclean tui
 ```
+
+## Real Gmail read workflow
+
+```bash
+# Store the local database somewhere explicit for a test run.
+export GCLEAN_DB_PATH=$(mktemp -d)/gclean.db
+
+gclean login       # browser-based OAuth; saves a local token
+gclean scan        # reads Gmail metadata through the real client
+gclean stats
+gclean dry-run     # preview only; does not modify Gmail
+```
+
+Do not run `gclean clean`, `gclean undo`, or `gclean purge` against a real
+account yet: the real client's Trash, restore, and empty-Trash methods are
+intentionally not implemented. Use the fixture flow below to exercise those
+commands safely.
 
 ## Safety model (PRD §15)
 
@@ -71,10 +106,9 @@ gclean tui
 
 ## Roadmap → next session
 
-- `gclean login` complete OAuth browser flow with localhost callback
 - `google.golang.org/api/gmail/v1` RealClient implementation of `Trash`/`Restore`/`Empty`
-- `gclean tui` Bubble Tea UI for §12 (toggle senders, see reclaim before action)
 - People-API enrichment (`IsContact`) on scan
+- `gclean tui` Bubble Tea UI for §12 (toggle senders, see reclaim before action)
 - Per-message rate-limited batcher for `clean`
 - `gclean rules` editor (currently show-only)
 - `gclean report` analytics export
@@ -88,7 +122,7 @@ cmd/gclean/main.go          Entry point, slog setup
 internal/cli/               Cobra command graph (every §9 command)
 internal/config/            YAML config (path resolution, parse, compile)
 internal/engine/            classifier, protector, evaluator (rules DSL), planner
-internal/gmailclient/       Client interface + FakeClient + RealClient stub
+internal/gmailclient/       Client interface + FakeClient + OAuth-backed RealClient
 internal/models/            Cross-package types
 internal/storage/           modernc/sqlite schema + stats aggregator + sender-safety rollup
 internal/tui/               Bubble Tea checkbox UI for `gclean tui` (EXPERIMENTAL)
