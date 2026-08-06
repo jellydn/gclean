@@ -113,7 +113,10 @@ func NewAuthCodeServer() (*AuthCodeServer, error) {
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		code := r.URL.Query().Get("code")
 		if code == "" {
-			s.errCh <- fmt.Errorf("no code in callback")
+			select {
+			case s.errCh <- fmt.Errorf("no code in callback"):
+			default:
+			}
 			http.Error(w, "missing code", http.StatusBadRequest)
 			return
 		}
@@ -138,12 +141,15 @@ func NewAuthCodeServer() (*AuthCodeServer, error) {
 // WaitForCode blocks until the authorization code arrives, the server errors,
 // or the timeout expires.
 func (s *AuthCodeServer) WaitForCode(timeout time.Duration) (string, error) {
+	timer := time.NewTimer(timeout)
+	defer timer.Stop()
+
 	select {
 	case code := <-s.code:
 		return code, nil
 	case err := <-s.errCh:
 		return "", err
-	case <-time.After(timeout):
+	case <-timer.C:
 		return "", fmt.Errorf("auth timeout after %v", timeout)
 	}
 }

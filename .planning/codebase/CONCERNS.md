@@ -4,12 +4,12 @@ Current limitations, risks, and fragile areas. This document describes the repos
 
 ## Highest-priority incomplete integration
 
-### 1. Real Gmail mutations are still stubbed
+### 1. Real Gmail cleanup still needs reconciliation hardening
 
-- **Location:** `internal/gmailclient/real.go:98-106`
-- `RealClient.ListMessages` is implemented, but `TrashMessages`, `EmptyTrash`, and `RestoreFromTrash` return `ErrNotImplemented`.
-- `gclean clean`, `purge`, and `undo` therefore work end-to-end only with `FakeClient` and `--fixtures`.
-- Before enabling real cleanup, implement and test Gmail modify calls, batching, retries, partial-failure behavior, and idempotency. The CLI safety gate alone is not sufficient protection against API-level mistakes.
+- **Location:** `internal/gmailclient/real.go`, `internal/engine/pipeline.go:143-190`
+- `RealClient` now implements retrying Trash and restore calls plus paginated Trash listing and 1,000-ID batch deletion for purge.
+- The remaining risk is cross-system recovery: a partial Gmail mutation or process failure can occur before SQLite deletion and undo-cache persistence complete.
+- Keep the fixture flow as the default local verification path while adding explicit reconciliation, partial-failure tests, and carefully controlled live-account validation.
 
 ### 2. OAuth callback server has a fixed port
 
@@ -30,7 +30,7 @@ Current limitations, risks, and fragile areas. This document describes the repos
 
 - **Location:** `internal/cli/pipeline.go:197-315`
 - `clean` and `purge` require `--yes`, and the planner refuses non-junk deletes. However, there is no compile-time mechanism that forces a future mutating command to add the same gate.
-- Add integration tests around real Gmail mutation once implemented, including partial failures and retries.
+- Add integration tests around the real Gmail mutation adapter, including partial failures, retries, local reconciliation, and repeated-command idempotency.
 
 ### 5. Contact protection is modeled but not enriched
 
@@ -78,11 +78,11 @@ Current limitations, risks, and fragile areas. This document describes the repos
 - `Aggregations()` reads every row to build stats, sender volume, and sender safety in one pass. This is a good locality trade-off for the fixture corpus, but a large mailbox will increase latency and memory use.
 - Consider database-side aggregation, pagination/chunking, or incremental rollups when real Gmail sync is enabled.
 
-### 12. Gmail metadata listing is one detail request per message
+### 12. Gmail metadata listing and mutation calls need quota-aware control
 
 - **Location:** `internal/gmailclient/real.go:58-91`
 - The API list response is followed by an individual metadata `Get` for every message. The code logs page and 100-message progress, but there is no rate-limit/backoff or batch request layer yet.
-- Large accounts will need bounded concurrency or batching, retry policy, cancellation, and quota-aware progress reporting.
+- Large accounts still need bounded concurrency or batching for metadata reads, cancellation, and quota-aware progress reporting; mutation calls now have bounded retries and purge batching.
 
 ### 13. Undo cache grows with the full cleanup cohort
 
@@ -116,6 +116,5 @@ Current limitations, risks, and fragile areas. This document describes the repos
 
 ## Documentation synchronization
 
-**Resolved in the current working tree.** `README.md` and `AGENTS.md` now document the implemented OAuth login flow, the real Gmail metadata-only `ListMessages` path, `GCLEAN_TOKEN_PATH`, and the fact that real Trash/restore/purge operations remain unsupported. `.planning/real-gmail-test-plan.md` also reflects the `localhost:8080` callback and the classifier metadata headers now fetched by `RealClient`.
-
-Keep these documents synchronized when the real Gmail write path, contact enrichment, or other pending integrations land. This map intentionally continues to track the remaining implementation concerns above rather than treating documentation updates as feature completion.
+**Resolved in the current working tree.** `README.md` and `AGENTS.md` now document the implemented OAuth login flow, real Gmail metadata reads, retrying Trash/restore calls, paginated purge batching, and `GCLEAN_TOKEN_PATH`. `.planning/real-gmail-test-plan.md` also reflects the `localhost:8080` callback and classifier metadata headers fetched by `RealClient`.Keep these documents synchronized when local reconciliation, contact enrichment, or other pending integrations land.
+ This map intentionally continues to track the remaining implementation concerns above rather than treating documentation updates as feature completion.

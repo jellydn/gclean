@@ -12,9 +12,9 @@ Get the **full safe-by-default pipeline** (`scan → stats → dry-run → clean
 | `gclean scan` (real) | `cli/pipeline.go:newScanCmd` → `resolveClient` → `gmailclient.NewRealClient` → `RealClient.ListMessages` | **Implemented for metadata reads** — `ListMessages` paginates via `gmail.Users.Messages.List` and fetches `From/To/Cc/Subject/Date` plus `List-Unsubscribe/List-ID/Precedence/Auto-Submitted`; the remaining real-data gaps are contact/replied enrichment |
 | `gclean stats`       | `cli/pipeline.go:newStatsCmd` → `storage.Store.Aggregations`                                             | **Implemented** — reads from local SQLite, no Gmail I/O                                                                                                                                                                                                               |
 | `gclean dry-run`     | `cli/pipeline.go:newDryRunCmd` → `engine.Pipeline.PlanStages`                                            | **Implemented** — runs `engine.Plan` (offline, no Gmail I/O), enforces §15 non-junk protection                                                                                                                                                                        |
-| `gclean clean`       | `cli/pipeline.go:newCleanCmd` → `engine.Pipeline.ApplyStages` → `RealClient.TrashMessages`               | **STUBBED** — `TrashMessages` returns `ErrNotImplemented`                                                                                                                                                                                                             |
-| `gclean undo`        | `cli/pipeline.go:newUndoCmd` → `RealClient.RestoreFromTrash`                                             | **STUBBED** — `RestoreFromTrash` returns `ErrNotImplemented`                                                                                                                                                                                                          |
-| `gclean purge`       | `cli/pipeline.go:newPurgeCmd` → `RealClient.EmptyTrash`                                                  | **STUBBED** — `EmptyTrash` returns `ErrNotImplemented`                                                                                                                                                                                                                |
+| `gclean clean`       | `cli/pipeline.go:newCleanCmd` → `engine.Pipeline.ApplyStages` → `RealClient.TrashMessages`               | **Implemented in adapter** — individual Trash calls retry transient Gmail errors; local reconciliation still needs end-to-end validation                                                                                                                                 |
+| `gclean undo`        | `cli/pipeline.go:newUndoCmd` → `RealClient.RestoreFromTrash`                                             | **Implemented in adapter** — individual Untrash calls retry transient Gmail errors; local restore reconciliation still needs end-to-end validation                                                                                                                       |
+| `gclean purge`       | `cli/pipeline.go:newPurgeCmd` → `RealClient.EmptyTrash`                                                  | **Implemented in adapter** — paginates `TRASH` and batch-deletes up to 1,000 IDs per request; destructive live validation remains pending                                                                                                                               |
 
 ### Two enrichment gaps that remain against real data
 
@@ -75,21 +75,13 @@ peopleSvc, _ := people.NewService(ctx, option.WithTokenSource(ts))
 
 This can be **deferred to Phase 1.5** — without it, the `contacts: true` keep rule simply won't fire, and messages from contacts will rely on the other protect signals (starred, important, replied, recent_days). Safe but less protective.
 
-## Phase 2 — Implement the write path (trash + undo + purge)
+## Phase 2 — Validate and harden the write path (trash + undo + purge)
 
 **Goal**: Make `clean`, `undo`, and `purge` mutate real Gmail.
 
 ### 2a. Implement `TrashMessages`
 
-`internal/gmailclient/real.go:91` currently:
-
-```go
-func (r *RealClient) TrashMessages(ids []string) error {
-    return ErrNotImplemented
-}
-```
-
-**Implementation**: Use `gmail.Users.Messages.Trash` (moves to Trash, recoverable). Gmail's API supports batching via `gmail.NewBatchService` — use it for the 100-message batch size to respect rate limits.
+`internal/gmailclient/real.go` now uses retrying `gmail.Users.Messages.Trash` calls (moves to Trash, recoverable). The API call is intentionally sequential so partial progress and the failing message remain deterministic; the adapter reports the `n/m` position in the returned error.
 
 ```go
 func (r *RealClient) TrashMessages(ids []string) error {
@@ -114,19 +106,19 @@ Actually, the Gmail API's batch endpoint is the right tool here. The `google-gol
 
 ### 2b. Implement `RestoreFromTrash`
 
-`real.go:97` — use `gmail.Users.Messages.UnTrash`.
+`real.go` — uses `gmail.Users.Messages.Untrash` with the same transient-error retry policy.
 
 **File**: `internal/gmailclient/real.go:97-99`
 
 ### 2c. Implement `EmptyTrash`
 
-`real.go:101` — use `gmail.Users.Messages.Delete` with `q=label:trash` or `gmail.Users.Trash`'s empty endpoint. Actually: list trash messages then batch-delete, or use the `gmail.users.empty` endpoint which requires `https://www.googleapis.com/auth/gmail.modify`.
+`real.go` — paginates `LabelIds("TRASH")` and calls `BatchDelete` in chunks of up to 1,000 IDs, with retries for transient failures.
 
 **File**: `internal/gmailclient/real.go:101-103`
 
-### 2d. Rate limiting
+### 2d. Local reconciliation and live validation
 
-After implementing 2a–2c, add a minimal rate limiter (token bucket or simple sleep) to avoid hitting Gmail API quotas. The `MaxResults(500)` page size in `ListMessages` already gives some control, but `TrashMessages` batching should also throttle.
+The adapter can report partial progress, but `engine.Pipeline` still performs Gmail mutation, SQLite deletion, and undo-cache persistence as separate operations. Add reconciliation and failure-injection tests before broad live-account use. The existing 100ms/200ms retry backoff is intentionally conservative and should be revisited with observed quota behaviour.
 
 ## Phase 3 — End-to-end test against real data
 
