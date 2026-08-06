@@ -29,7 +29,8 @@ type Pipeline struct {
 	ErrOut Writer
 	// CachePath is the undo-cache file the Apply stage writes to. Empty
 	// disables caching (some callers, e.g. dry-run, don't trash).
-	CachePath string
+	CachePath     string
+	SelectionPath string
 
 	// stage-populated state, read by the CLI to render output.
 	scanned        int
@@ -123,10 +124,15 @@ func (p *Pipeline) loadPlan(pl *Pipeline) error {
 	if err != nil {
 		return err
 	}
+	selected, err := loadSelectedSenders(pl.SelectionPath)
+	if err != nil {
+		return err
+	}
 	decisions, rep := Plan(PlanInputs{
-		Messages: classified,
-		Config:   pl.Rules,
-		Keep:     pl.Keep,
+		Messages:        classified,
+		Config:          pl.Rules,
+		Keep:            pl.Keep,
+		SelectedSenders: selected,
 	})
 	for _, d := range decisions {
 		reasons := strings.Join(d.Reasons, ";")
@@ -188,6 +194,24 @@ func (p *Pipeline) Scanned() int                            { return p.scanned }
 func (p *Pipeline) Report() models.DryRunReport             { return p.report }
 func (p *Pipeline) TrashedIDs() []string                    { return p.trashedIDs }
 func (p *Pipeline) TrashedRecords() []storage.StoredMessage { return p.trashedRecords }
+
+func loadSelectedSenders(path string) (map[string]struct{}, error) {
+	if path == "" {
+		return nil, nil
+	}
+	senders, err := storage.LoadSelection(path)
+	if err != nil {
+		return nil, fmt.Errorf("load sender selection: %w", err)
+	}
+	if len(senders) == 0 {
+		return nil, nil
+	}
+	selected := make(map[string]struct{}, len(senders))
+	for _, sender := range senders {
+		selected[sender] = struct{}{}
+	}
+	return selected, nil
+}
 
 func encodeJSON(v any) string {
 	b, _ := json.Marshal(v)

@@ -73,7 +73,7 @@ gclean undo  --fixtures testdata/fixtures/messages.json
 
 # Experimental interactive UI: per-sender checkbox list with safe-to-delete counts.
 # Press Space to toggle, Enter to commit, q to quit. Selection is written to
-# ~/.config/gclean/tui-selection.json (the selection is currently advisory).
+# ~/.config/gclean/tui-selection.json (the selected senders constrain dry-run and clean).
 gclean tui
 ```
 

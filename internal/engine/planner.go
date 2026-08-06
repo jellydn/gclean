@@ -9,9 +9,10 @@ import (
 
 // PlanInputs bundles everything the planner needs.
 type PlanInputs struct {
-	Messages []*models.Classified
-	Config   RuleConfig
-	Keep     KeepConfig
+	Messages        []*models.Classified
+	Config          RuleConfig
+	Keep            KeepConfig
+	SelectedSenders map[string]struct{}
 }
 
 // RuleConfig is the parsed, evaluator-ready form of the config file under
@@ -59,6 +60,16 @@ func Plan(in PlanInputs) ([]models.Decision, models.DryRunReport) {
 	for _, c := range in.Messages {
 		m := c.Message
 		d := models.Decision{Message: m, Classified: c}
+
+		if len(in.SelectedSenders) > 0 {
+			if _, selected := in.SelectedSenders[m.Sender.Email]; !selected {
+				d.Verdict = models.VerdictKeep
+				d.Reasons = append(d.Reasons, "selection_excluded")
+				decisions = append(decisions, d)
+				rep.KeepCount++
+				continue
+			}
+		}
 
 		// 1. Domain ignored outright.
 		if in.Config.DomainIgnored(extractDomain(m.Sender.Email)) {

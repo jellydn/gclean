@@ -38,11 +38,11 @@ Current limitations, risks, and fragile areas. This document describes the repos
 - `Sender.IsContact` affects protection, but no People API or equivalent enrichment currently populates it for real scans. False negatives could reduce the keep cohort unless Gmail data already supplies the field.
 - Adding contact enrichment is a privacy and API-scope decision, not merely a mechanical feature.
 
-### 6. TUI selection is not connected to cleanup
+### 6. TUI selection is connected to planning, but needs explicit lifecycle UX
 
-- **Location:** `internal/cli/meta.go:114-158`, `internal/cli/insights.go:20-36`
-- `gclean tui` writes selected senders to `tui-selection.json`, but `clean` does not consume that file. The UI is therefore advisory and cannot yet constrain the applied cohort.
-- Do not imply that committing a TUI selection changes Gmail until this wiring is implemented and tested.
+- **Location:** `internal/storage/selection.go`, `internal/cli/meta.go:114-158`, `internal/engine/planner.go:52-145`
+- `gclean tui` writes a validated sender cohort and `dry-run`/`clean` consume it to exclude unselected senders.
+- The selection persists until replaced, so the CLI should expose its age/path clearly and eventually provide an explicit clear command. Existing advisory-format files are loaded compatibly.
 
 ## Persistence and correctness
 
