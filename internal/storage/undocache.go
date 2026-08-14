@@ -34,8 +34,18 @@ func checksumRecords(recs []StoredMessage) (string, error) {
 }
 
 // SaveUndoCache writes the pre-trash records to path with an integrity tag.
+// It writes and syncs a temporary file before renaming it into place so a
+// crash cannot leave a partially-written cache at the canonical path.
 func SaveUndoCache(path string, recs []StoredMessage) error {
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+	dir := filepath.Dir(path)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return err
+	}
+	if info, err := os.Stat(path); err == nil {
+		if info.Size() > 0 {
+			return fmt.Errorf("undo cache already exists at %s; run `gclean undo` or `gclean purge` first", path)
+		}
+	} else if !os.IsNotExist(err) {
 		return err
 	}
 	sum, err := checksumRecords(recs)
@@ -47,7 +57,41 @@ func SaveUndoCache(path string, recs []StoredMessage) error {
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(path, b, 0o600)
+
+	tmp, err := os.CreateTemp(dir, ".undo-cache-*")
+	if err != nil {
+		return err
+	}
+	tmpPath := tmp.Name()
+	defer func() {
+		_ = tmp.Close()
+		_ = os.Remove(tmpPath)
+	}()
+	if err := tmp.Chmod(0o600); err != nil {
+		return err
+	}
+	if _, err := tmp.Write(b); err != nil {
+		return err
+	}
+	if err := tmp.Sync(); err != nil {
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		return err
+	}
+	if err := os.Rename(tmpPath, path); err != nil {
+		return err
+	}
+	return syncDirectory(dir)
+}
+
+func syncDirectory(path string) error {
+	dir, err := os.Open(path)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = dir.Close() }()
+	return dir.Sync()
 }
 
 // LoadUndoCache reads pre-trash records, verifying the integrity tag. A
