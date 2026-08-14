@@ -6,8 +6,8 @@ import (
 	"fmt"
 	"strings"
 
-	tea "github.com/charmbracelet/bubbletea"
-	"github.com/charmbracelet/lipgloss"
+	tea "charm.land/bubbletea/v2"
+	"charm.land/lipgloss/v2"
 
 	"gclean/internal/storage"
 )
@@ -103,7 +103,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.width = mm.Width
 		m.height = mm.Height
 		return m, nil
-	case tea.KeyMsg:
+	case tea.KeyPressMsg:
 		// Empty list: only quit keys are meaningful.
 		if len(m.rows) == 0 {
 			switch mm.String() {
@@ -127,7 +127,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.cursor++
 			}
 			return m, nil
-		case " ":
+		case "space":
 			em := m.rows[m.cursor].Email
 			m.selected[em] = !m.selected[em]
 			return m, nil
@@ -151,14 +151,17 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 // View renders either the interactive list, the cancelled message, or the
 // commit summary.
-func (m Model) View() string {
-	if m.quit && !m.committed {
-		return "gclean tui: cancelled.\n"
+func (m Model) View() tea.View {
+	var content string
+	switch {
+	case m.quit && !m.committed:
+		content = "gclean tui: cancelled.\n"
+	case m.committed:
+		content = m.commitSummaryView()
+	default:
+		content = m.mainView()
 	}
-	if m.committed {
-		return m.commitSummaryView()
-	}
-	return m.mainView()
+	return tea.NewView(content)
 }
 
 func (m Model) mainView() string {

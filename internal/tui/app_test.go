@@ -4,7 +4,7 @@ import (
 	"strings"
 	"testing"
 
-	tea "github.com/charmbracelet/bubbletea"
+	tea "charm.land/bubbletea/v2"
 
 	"gclean/internal/storage"
 )
@@ -61,7 +61,7 @@ func TestUpdate_SpaceTogglesSender(t *testing.T) {
 	if !m.selected[mkT("a", "x.com")] {
 		t.Fatal("pre-selected expected for a@x.com")
 	}
-	next := mustRun(t, func() (tea.Model, tea.Cmd) { return m.Update(tea.KeyMsg{Type: tea.KeySpace}) })
+	next := mustRun(t, func() (tea.Model, tea.Cmd) { return m.Update(tea.KeyPressMsg{Code: tea.KeySpace}) })
 	if next.selected[mkT("a", "x.com")] {
 		t.Error("space should toggle off a@x.com")
 	}
@@ -77,27 +77,27 @@ func TestUpdate_J_K_MoveCursor(t *testing.T) {
 		t.Fatalf("cursor should start at 0, got %d", m.cursor)
 	}
 
-	next := mustRun(t, func() (tea.Model, tea.Cmd) { return m.Update(tea.KeyMsg{Type: tea.KeyDown}) })
+	next := mustRun(t, func() (tea.Model, tea.Cmd) { return m.Update(tea.KeyPressMsg{Code: tea.KeyDown}) })
 	if next.cursor != 1 {
 		t.Errorf("down: cursor=%d want 1", next.cursor)
 	}
-	next = mustRun(t, func() (tea.Model, tea.Cmd) { return next.Update(tea.KeyMsg{Type: tea.KeyDown}) })
+	next = mustRun(t, func() (tea.Model, tea.Cmd) { return next.Update(tea.KeyPressMsg{Code: tea.KeyDown}) })
 	if next.cursor != 2 {
 		t.Errorf("down: cursor=%d want 2", next.cursor)
 	}
 	// Clamp at bottom.
-	next = mustRun(t, func() (tea.Model, tea.Cmd) { return next.Update(tea.KeyMsg{Type: tea.KeyDown}) })
+	next = mustRun(t, func() (tea.Model, tea.Cmd) { return next.Update(tea.KeyPressMsg{Code: tea.KeyDown}) })
 	if next.cursor != 2 {
 		t.Errorf("down at bottom: cursor=%d want 2 (clamped)", next.cursor)
 	}
 	// Up moves back.
-	next = mustRun(t, func() (tea.Model, tea.Cmd) { return next.Update(tea.KeyMsg{Type: tea.KeyUp}) })
+	next = mustRun(t, func() (tea.Model, tea.Cmd) { return next.Update(tea.KeyPressMsg{Code: tea.KeyUp}) })
 	if next.cursor != 1 {
 		t.Errorf("up: cursor=%d want 1", next.cursor)
 	}
 	// Clamp at top.
-	next = mustRun(t, func() (tea.Model, tea.Cmd) { return next.Update(tea.KeyMsg{Type: tea.KeyUp}) })
-	next = mustRun(t, func() (tea.Model, tea.Cmd) { return next.Update(tea.KeyMsg{Type: tea.KeyUp}) })
+	next = mustRun(t, func() (tea.Model, tea.Cmd) { return next.Update(tea.KeyPressMsg{Code: tea.KeyUp}) })
+	next = mustRun(t, func() (tea.Model, tea.Cmd) { return next.Update(tea.KeyPressMsg{Code: tea.KeyUp}) })
 	if next.cursor != 0 {
 		t.Errorf("up at top: cursor=%d want 0 (clamped)", next.cursor)
 	}
@@ -106,7 +106,7 @@ func TestUpdate_J_K_MoveCursor(t *testing.T) {
 func TestUpdate_Q_QuitsWithoutCommit(t *testing.T) {
 	m := NewModel([]storage.SenderSafety{{Email: mkT("a", "x.com"), DeleteCount: 1}})
 	next := mustRun(t, func() (tea.Model, tea.Cmd) {
-		return m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'q'}})
+		return m.Update(tea.KeyPressMsg{Code: 'q'})
 	})
 	if !next.Quitted() {
 		t.Error("q should set Quitted()=true")
@@ -122,7 +122,7 @@ func TestUpdate_EnterCommitsAndIncludesSelection(t *testing.T) {
 		{Email: mkT("b", "x.com"), DeleteCount: 0, DeleteBytes: 0},
 		{Email: mkT("c", "x.com"), DeleteCount: 7, DeleteBytes: 4200},
 	})
-	next := mustRun(t, func() (tea.Model, tea.Cmd) { return m.Update(tea.KeyMsg{Type: tea.KeyEnter}) })
+	next := mustRun(t, func() (tea.Model, tea.Cmd) { return m.Update(tea.KeyPressMsg{Code: tea.KeyEnter}) })
 	if !next.Committed() {
 		t.Fatal("enter should set Committed()=true")
 	}
@@ -144,7 +144,7 @@ func TestUpdate_EnterCommitsAndIncludesSelection(t *testing.T) {
 
 func TestUpdate_CtrlCEqualsQuit(t *testing.T) {
 	m := NewModel([]storage.SenderSafety{{Email: mkT("a", "x.com"), DeleteCount: 1}})
-	next := mustRun(t, func() (tea.Model, tea.Cmd) { return m.Update(tea.KeyMsg{Type: tea.KeyCtrlC}) })
+	next := mustRun(t, func() (tea.Model, tea.Cmd) { return m.Update(tea.KeyPressMsg{Code: 'c', Mod: tea.ModCtrl}) })
 	if !next.Quitted() {
 		t.Error("ctrl+c should quit")
 	}
@@ -157,13 +157,13 @@ func TestUpdate_A_SelectsAllJunk(t *testing.T) {
 		{Email: mkT("c", "z.com"), DeleteCount: 2, DeleteBytes: 100},
 	})
 	clr := mustRun(t, func() (tea.Model, tea.Cmd) {
-		return m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'n'}})
+		return m.Update(tea.KeyPressMsg{Code: 'n'})
 	})
 	if len(clr.selected) != 0 {
 		t.Fatalf("n should clear; got %v", clr.selected)
 	}
 	all := mustRun(t, func() (tea.Model, tea.Cmd) {
-		return clr.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'a'}})
+		return clr.Update(tea.KeyPressMsg{Code: 'a'})
 	})
 	wantSelected := []string{mkT("a", "x.com"), mkT("c", "z.com")}
 	for _, em := range wantSelected {
@@ -185,7 +185,7 @@ func TestUpdate_N_ClearsSelection(t *testing.T) {
 		t.Fatal("expected pre-selected")
 	}
 	clr := mustRun(t, func() (tea.Model, tea.Cmd) {
-		return m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'n'}})
+		return m.Update(tea.KeyPressMsg{Code: 'n'})
 	})
 	if len(clr.selected) != 0 {
 		t.Errorf("n should clear: %v", clr.selected)
@@ -205,13 +205,13 @@ func TestUpdate_WindowSizeMsg(t *testing.T) {
 func TestUpdate_EmptyRowsGuards(t *testing.T) {
 	m := NewModel(nil)
 	next := mustRun(t, func() (tea.Model, tea.Cmd) {
-		return m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'a'}})
+		return m.Update(tea.KeyPressMsg{Code: 'a'})
 	})
 	if next.committed || next.quit {
 		t.Errorf("empty list: non-quit keys should be inert, got %+v", next)
 	}
 	q := mustRun(t, func() (tea.Model, tea.Cmd) {
-		return m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'q'}})
+		return m.Update(tea.KeyPressMsg{Code: 'q'})
 	})
 	if !q.Quitted() {
 		t.Error("empty list: q should still quit")
@@ -260,7 +260,7 @@ func TestView_MainViewContainsHeaderAndHelpers(t *testing.T) {
 		{Email: mkT("a", "x.com"), DeleteCount: 7, DeleteBytes: 1024 * 1024 * 5},
 		{Email: mkT("b", "y.com"), DeleteCount: 0},
 	})
-	v := stripANSI(m.View())
+	v := stripANSI(m.View().Content)
 	for _, want := range []string{"gclean tui", mkT("a", "x.com"), mkT("b", "y.com"), "[✓]", "[ ]", "EXPERIMENTAL", "space toggle"} {
 		if !strings.Contains(v, want) {
 			t.Errorf("View missing %q\nbody:\n%s", want, v)
@@ -271,10 +271,10 @@ func TestView_MainViewContainsHeaderAndHelpers(t *testing.T) {
 func TestView_CancelledMessage(t *testing.T) {
 	m := NewModel([]storage.SenderSafety{{Email: mkT("a", "x.com"), DeleteCount: 1}})
 	q := mustRun(t, func() (tea.Model, tea.Cmd) {
-		return m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'q'}})
+		return m.Update(tea.KeyPressMsg{Code: 'q'})
 	})
-	if !strings.Contains(q.View(), "cancelled") {
-		t.Errorf("q View should include 'cancelled': %s", q.View())
+	if !strings.Contains(q.View().Content, "cancelled") {
+		t.Errorf("q View should include 'cancelled': %s", q.View().Content)
 	}
 }
 
@@ -282,8 +282,8 @@ func TestView_CommittedSummary(t *testing.T) {
 	m := NewModel([]storage.SenderSafety{
 		{Email: mkT("a", "x.com"), DeleteCount: 9, DeleteBytes: 2048},
 	})
-	c := mustRun(t, func() (tea.Model, tea.Cmd) { return m.Update(tea.KeyMsg{Type: tea.KeyEnter}) })
-	v := c.View()
+	c := mustRun(t, func() (tea.Model, tea.Cmd) { return m.Update(tea.KeyPressMsg{Code: tea.KeyEnter}) })
+	v := c.View().Content
 	if !strings.Contains(v, "selection confirmed") {
 		t.Errorf("committed View should include 'selection confirmed': %s", v)
 	}
