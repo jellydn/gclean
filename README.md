@@ -16,16 +16,16 @@ This scaffold implements the **local pipeline end-to-end against fixture data**:
 - `gclean dry-run` walks the keep→archive→delete plan with the §15
   "refuse to delete non-junk even when a delete rule matches" safety invariant.
 - `gclean clean --yes --fixtures …` moves the delete cohort to Trash
-  in-memory through the FakeClient. Real Gmail mutation remains disabled until
-  the write path is implemented.
+  in-memory through the FakeClient. The real client now supports retrying Trash
+  and restore calls; local reconciliation remains under active hardening.
 - `gclean purge --yes` empties Trash. `gclean undo` restores the last clean batch
   when using the fixture client.
 
-OAuth login and real Gmail read support are now implemented. Run `gclean login`
-to authorize a desktop OAuth client, then `gclean scan` can fetch Gmail metadata
-without `--fixtures`. The real client currently supports listing and classifying
-messages only; `clean`, `undo`, and `purge` still return a not-implemented error
-when pointed at real Gmail. The seam is `internal/gmailclient.Client`, so the
+OAuth login and real Gmail read/write support are now implemented. Run
+`gclean login` to authorize a desktop OAuth client, then `gclean scan` can fetch
+Gmail metadata without `--fixtures`. The real client retries individual Trash and
+restore calls and empties Trash by paginating the Trash label and batch-deleting
+up to 1,000 IDs per request. The seam is `internal/gmailclient.Client`, so the
 fixture client remains available for safe local end-to-end testing.
 
 For real Gmail setup, provide `credentials.json` at
@@ -37,7 +37,7 @@ The real metadata scan requests the headers used by classification, including
 `List-Unsubscribe`, `List-ID`, `Precedence`, and `Auto-Submitted`.
 
 The local fixture workflow remains the recommended way to exercise cleanup
-until the real Gmail write path is complete.
+while local reconciliation and live-account end-to-end validation are completed.
 
 The seam is `internal/gmailclient.Client` — the fake and real implementations
 can be swapped without changing the engine or storage layers.
@@ -89,10 +89,9 @@ gclean stats
 gclean dry-run     # preview only; does not modify Gmail
 ```
 
-Do not run `gclean clean`, `gclean undo`, or `gclean purge` against a real
-account yet: the real client's Trash, restore, and empty-Trash methods are
-intentionally not implemented. Use the fixture flow below to exercise those
-commands safely.
+Real `clean`, `undo`, and `purge` now call the Gmail mutation adapter. Use the
+fixture flow below first: real-account validation is destructive, and the local
+reconciliation path is still being hardened before broad production use.
 
 ## Safety model (PRD §15)
 
@@ -106,7 +105,7 @@ commands safely.
 
 ## Roadmap → next session
 
-- `google.golang.org/api/gmail/v1` RealClient implementation of `Trash`/`Restore`/`Empty`
+- Reconcile local SQLite and undo-cache state after partial or interrupted real Gmail mutations
 - People-API enrichment (`IsContact`) on scan
 - `gclean tui` Bubble Tea UI for §12 (toggle senders, see reclaim before action)
 - Per-message rate-limited batcher for `clean`

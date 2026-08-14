@@ -6,11 +6,13 @@ import (
 	"fmt"
 	"log/slog"
 	"net/mail"
+	"net/url"
 	"strings"
 	"time"
 
 	"gclean/internal/models"
 	"google.golang.org/api/gmail/v1"
+	"google.golang.org/api/googleapi"
 	"google.golang.org/api/option"
 )
 
@@ -52,8 +54,11 @@ func NewRealClient(credentialsPath string) (*RealClient, error) {
 	}, nil
 }
 
-// ErrNotImplemented is returned by trash-mutating methods until Milestone 2.
-var ErrNotImplemented = errors.New("gmailclient.RealClient: Gmail mutation operations are not implemented")
+const (
+	mutationBatchSize   = 1000
+	maxMutationAttempts = 3
+	mutationRetryDelay  = 100 * time.Millisecond
+)
 
 func (r *RealClient) ListMessages(query string, max int) ([]*models.Message, error) {
 	var out []*models.Message
@@ -95,15 +100,99 @@ func (r *RealClient) ListMessages(query string, max int) ([]*models.Message, err
 }
 
 func (r *RealClient) TrashMessages(ids []string) error {
-	return ErrNotImplemented
+	for i, id := range ids {
+		if err := r.retryMutation("trash message "+id, func() error {
+			_, err := r.service.Users.Messages.Trash("me", id).Do()
+			return err
+		}); err != nil {
+			return fmt.Errorf("trash message %d/%d (%s): %w", i+1, len(ids), id, err)
+		}
+	}
+	return nil
 }
 
 func (r *RealClient) EmptyTrash() error {
-	return ErrNotImplemented
+	var (
+		ids       []string
+		pageToken string
+	)
+	for {
+		call := r.service.Users.Messages.List("me").LabelIds("TRASH").MaxResults(mutationBatchSize)
+		if pageToken != "" {
+			call.PageToken(pageToken)
+		}
+		var resp *gmail.ListMessagesResponse
+		if err := r.retryMutation("list trash", func() error {
+			var err error
+			resp, err = call.Do()
+			return err
+		}); err != nil {
+			return err
+		}
+		for _, message := range resp.Messages {
+			ids = append(ids, message.Id)
+		}
+		if resp.NextPageToken == "" {
+			break
+		}
+		pageToken = resp.NextPageToken
+	}
+	for start := 0; start < len(ids); start += mutationBatchSize {
+		end := min(start+mutationBatchSize, len(ids))
+		batch := &gmail.BatchDeleteMessagesRequest{Ids: ids[start:end]}
+		if err := r.retryMutation(fmt.Sprintf("empty trash batch %d-%d", start+1, end), func() error {
+			return r.service.Users.Messages.BatchDelete("me", batch).Do()
+		}); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func (r *RealClient) RestoreFromTrash(ids []string) error {
-	return ErrNotImplemented
+	for i, id := range ids {
+		if err := r.retryMutation("restore message "+id, func() error {
+			_, err := r.service.Users.Messages.Untrash("me", id).Do()
+			return err
+		}); err != nil {
+			return fmt.Errorf("restore message %d/%d (%s): %w", i+1, len(ids), id, err)
+		}
+	}
+	return nil
+}
+
+func (r *RealClient) retryMutation(operation string, fn func() error) error {
+	for attempt := 1; attempt <= maxMutationAttempts; attempt++ {
+		if err := fn(); err == nil {
+			return nil
+		} else if attempt == maxMutationAttempts || !isRetryableGmailError(err) {
+			return fmt.Errorf("%s failed after %d attempt(s): %w", operation, attempt, err)
+		}
+		time.Sleep(mutationRetryDelay * time.Duration(1<<(attempt-1)))
+	}
+	return fmt.Errorf("%s failed", operation)
+}
+
+func isRetryableGmailError(err error) bool {
+	var apiErr *googleapi.Error
+	if errors.As(err, &apiErr) {
+		return apiErr.Code == 429 || apiErr.Code >= 500
+	}
+	var urlErr *url.Error
+	return errors.As(err, &urlErr)
+}
+
+func appendRecipients(to []string, header string) []string {
+	if header == "" {
+		return to
+	}
+	for _, recipient := range strings.Split(header, ",") {
+		recipient = strings.TrimSpace(recipient)
+		if recipient != "" {
+			to = append(to, recipient)
+		}
+	}
+	return to
 }
 
 func mapGmailMessage(m *gmail.Message) *models.Message {
@@ -123,25 +212,8 @@ func mapGmailMessage(m *gmail.Message) *models.Message {
 			sender.Email = from
 		}
 	}
-	var to []string
-	if toHdr, ok := headers["To"]; ok {
-		parts := strings.Split(toHdr, ",")
-		for _, p := range parts {
-			p = strings.TrimSpace(p)
-			if p != "" {
-				to = append(to, p)
-			}
-		}
-	}
-	if ccHdr, ok := headers["Cc"]; ok {
-		parts := strings.Split(ccHdr, ",")
-		for _, p := range parts {
-			p = strings.TrimSpace(p)
-			if p != "" {
-				to = append(to, p)
-			}
-		}
-	}
+	to := appendRecipients(nil, headers["To"])
+	to = appendRecipients(to, headers["Cc"])
 	var date time.Time
 	if m.InternalDate > 0 {
 		date = time.UnixMilli(m.InternalDate)
