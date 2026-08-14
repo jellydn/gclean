@@ -8,7 +8,7 @@ Get the **full safe-by-default pipeline** (`scan → stats → dry-run → clean
 
 | Stage                | Code path                                                                                                | Status                                                                                                                                                                                                                                                                |
 | -------------------- | -------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `gclean login`       | `cli/auth.go` → `gmailclient/oauth.go`                                                                   | **Implemented** — full OAuth2 browser flow, loopback callback server on `localhost:8080`, token saved to `~/.config/gclean/token.json` or `$GCLEAN_TOKEN_PATH`                                                                                                                                |
+| `gclean login`       | `cli/auth.go` → `gmailclient/oauth.go`                                                                   | **Implemented** — full OAuth2 browser flow, callback server on an available `localhost` loopback port, exact redirect URI passed through OAuth config, token saved to `~/.config/gclean/token.json` or `$GCLEAN_TOKEN_PATH`                                                                                                                                |
 | `gclean scan` (real) | `cli/pipeline.go:newScanCmd` → `resolveClient` → `gmailclient.NewRealClient` → `RealClient.ListMessages` | **Implemented for metadata reads** — `ListMessages` paginates via `gmail.Users.Messages.List` and fetches `From/To/Cc/Subject/Date` plus `List-Unsubscribe/List-ID/Precedence/Auto-Submitted`; the remaining real-data gaps are contact/replied enrichment |
 | `gclean stats`       | `cli/pipeline.go:newStatsCmd` → `storage.Store.Aggregations`                                             | **Implemented** — reads from local SQLite, no Gmail I/O                                                                                                                                                                                                               |
 | `gclean dry-run`     | `cli/pipeline.go:newDryRunCmd` → `engine.Pipeline.PlanStages`                                            | **Implemented** — runs `engine.Plan` (offline, no Gmail I/O), enforces §15 non-junk protection                                                                                                                                                                        |
@@ -43,7 +43,7 @@ Get the **full safe-by-default pipeline** (`scan → stats → dry-run → clean
 3. Create an **OAuth 2.0 Client ID** (Desktop app type)
 4. Download `credentials.json`
 5. Save to: `~/.config/gclean/credentials.json`
-6. Add scopes — the code already requests `gmail.GmailReadonlyScope` + `gmail.GmailModifyScope` (`oauth.go:20`):
+6. Add scopes — the code already requests `gmail.GmailReadonlyScope` + `gmail.GmailModifyScope` (`oauth.go`):
 
 ```go
 oauthScopes = []string{gmail.GmailReadonlyScope, gmail.GmailModifyScope}

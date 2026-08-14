@@ -49,6 +49,7 @@ gclean undo  --fixtures testdata/fixtures/messages.json
 | `GCLEAN_DB_PATH`          | `~/.config/gclean/gclean.db`        | SQLite db path    |
 | `GCLEAN_CREDENTIALS_PATH` | `~/.config/gclean/credentials.json` | Gmail OAuth client credentials |
 | `GCLEAN_TOKEN_PATH`       | `~/.config/gclean/token.json`       | Persisted Gmail OAuth token |
+| `GCLEAN_SELECTION_PATH`   | `~/.config/gclean/tui-selection.json` | Selected TUI sender cohort |
 | `GCLEAN_CONFIG_PATH`      | `~/.config/gclean/config.yaml`      | YAML rule config  |
 | `GCLEAN_UNDO_CACHE`       | `~/.config/gclean/undo-cache.json`  | Pre-trash records |
 
