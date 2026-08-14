@@ -15,6 +15,7 @@ import (
 	"testing"
 
 	"gclean/internal/defang"
+	"gclean/internal/storage"
 )
 
 func TestBuild_Help(t *testing.T) {
@@ -81,6 +82,71 @@ func TestScanCommand_DevFixturePipeline(t *testing.T) {
 	}
 	if !strings.Contains(out.String(), "Moved 0 messages") && !strings.Contains(out.String(), "Moved") {
 		t.Errorf("clean output should report count: %s", out.String())
+	}
+}
+
+func TestSelectionLimitsDryRunAndClean(t *testing.T) {
+	tmp := t.TempDir()
+	t.Setenv("GCLEAN_DB_PATH", filepath.Join(tmp, "gclean.db"))
+	t.Setenv("GCLEAN_UNDO_CACHE", filepath.Join(tmp, "undo-cache.json"))
+	t.Setenv("GCLEAN_SELECTION_PATH", filepath.Join(tmp, "selection.json"))
+	t.Setenv("GCLEAN_CONFIG_PATH", filepath.Join(tmp, "config.yaml"))
+	if err := os.WriteFile(filepath.Join(tmp, "config.yaml"), []byte("keep:\n  contacts: false\n  replied: false\n  starred: false\n  important: false\n  sent_by_user: false\n  recent_days: 0\ndelete:\n  - has:unsubscribe\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	type fixture struct {
+		ID     string `json:"id"`
+		Sender struct {
+			Email string `json:"email"`
+		} `json:"sender"`
+		Subject string            `json:"subject"`
+		Date    string            `json:"date"`
+		Headers map[string]string `json:"headers"`
+	}
+	selected := defang.MkEmail("selected", "example.com")
+	excluded := defang.MkEmail("excluded", "example.com")
+	data, err := json.Marshal([]fixture{
+		{ID: "m1", Sender: struct {
+			Email string `json:"email"`
+		}{selected}, Subject: "selected", Date: "2020-01-01T00:00:00Z", Headers: map[string]string{"List-Unsubscribe": "yes"}},
+		{ID: "m2", Sender: struct {
+			Email string `json:"email"`
+		}{excluded}, Subject: "excluded", Date: "2020-01-01T00:00:00Z", Headers: map[string]string{"List-Unsubscribe": "yes"}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	fixturePath := filepath.Join(tmp, "messages.json")
+	if err := os.WriteFile(fixturePath, data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := storage.SaveSelection(os.Getenv("GCLEAN_SELECTION_PATH"), []string{selected}); err != nil {
+		t.Fatal(err)
+	}
+
+	var out bytes.Buffer
+	cmd := Build(&out, &out)
+	cmd.SetArgs([]string{"scan", "--fixtures", fixturePath})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("scan: %v", err)
+	}
+	out.Reset()
+	cmd = Build(&out, &out)
+	cmd.SetArgs([]string{"dry-run"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("dry-run: %v", err)
+	}
+	if !strings.Contains(out.String(), "Safe to delete\t1 messages") {
+		t.Fatalf("dry-run should include only selected sender:\n%s", out.String())
+	}
+	out.Reset()
+	cmd = Build(&out, &out)
+	cmd.SetArgs([]string{"clean", "--yes", "--fixtures", fixturePath})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("clean: %v", err)
+	}
+	if !strings.Contains(out.String(), "Moved 1 messages") {
+		t.Fatalf("clean should move only selected sender:\n%s", out.String())
 	}
 }
 

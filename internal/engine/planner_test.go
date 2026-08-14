@@ -54,6 +54,29 @@ func findByID(t *testing.T, decisions []models.Decision, id string) models.Decis
 	return match
 }
 
+func TestPlan_SelectionExcludesUnselectedSenders(t *testing.T) {
+	messages := []*models.Classified{
+		classified("a1", "a@"+"example.com", "selected", time.Now().Add(-24*time.Hour), 100, true, "junk"),
+		classified("b1", "b@"+"example.com", "excluded", time.Now().Add(-24*time.Hour), 100, true, "junk"),
+	}
+	decisions, report := Plan(PlanInputs{
+		Messages:        messages,
+		Config:          RuleConfig{Delete: []Rule{{Action: "delete", Predicates: []Predicate{{Key: "from", Value: "example.com"}}}}},
+		SelectedSenders: map[string]struct{}{"a@" + "example.com": {}},
+	})
+	selected := findByID(t, decisions, "a1")
+	excluded := findByID(t, decisions, "b1")
+	if selected.Verdict != models.VerdictDelete {
+		t.Fatalf("selected verdict = %v, want delete", selected.Verdict)
+	}
+	if excluded.Verdict != models.VerdictKeep || len(excluded.Reasons) != 1 || excluded.Reasons[0] != "selection_excluded" {
+		t.Fatalf("excluded decision = %#v, want selection_excluded keep", excluded)
+	}
+	if report.DeleteCount != 1 {
+		t.Fatalf("delete count = %d, want 1", report.DeleteCount)
+	}
+}
+
 func TestPlan_DeleteRule_AppliesOnlyToJunk(t *testing.T) {
 	// §15 safety: even if a delete rule matches a non-junk message,
 	// the planner must NOT delete it.

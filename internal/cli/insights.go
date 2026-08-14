@@ -1,14 +1,10 @@
 package cli
 
 import (
-	"encoding/json"
 	"fmt"
 	"io"
-	"os"
-	"path/filepath"
 	"strings"
 	"text/tabwriter"
-	"time"
 
 	"github.com/spf13/cobra"
 
@@ -22,19 +18,10 @@ import (
 // file (the only "save" is saveSelection, which writes
 // ~/.config/gclean/tui-selection.json when the user commits a TUI choice).
 
-// saveSelection writes the TUI's commit-time selection to a JSON file.
-// Lives here (insights.go) because tui-selection.json is produced by the
-// interaction in newTuiCmd (meta.go) but consumed — eventually — by
-// `gclean clean`, which reads the file before applying only the selected
-// senders. The two-cmd pattern naturally straddles meta.go and pipeline.go;
-// the save helper sits with the other read-side insights commands.
+// saveSelection writes the TUI's commit-time selection through the storage
+// boundary so the same format is loaded by the planning pipeline.
 func saveSelection(emails []string) error {
-	path := filepath.Join(filepath.Dir(credentialsPath()), "tui-selection.json")
-	b, _ := json.MarshalIndent(map[string]any{
-		"selectors": emails,
-		"ts":        time.Now().UTC().Format(time.RFC3339),
-	}, "", "  ")
-	return os.WriteFile(path, b, 0o600)
+	return storage.SaveSelection(selectionPath(), emails)
 }
 
 // sliceControl drives newsletters/receipts: print one row per classified

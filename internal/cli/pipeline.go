@@ -34,13 +34,14 @@ func buildPipeline(store *storage.Store, client engine.Gmailer, doc config.Docum
 		return engine.Pipeline{}, err
 	}
 	return engine.Pipeline{
-		Store:     store,
-		Client:    client,
-		Keep:      cc.Keep,
-		Rules:     cc.Rules,
-		Out:       out,
-		ErrOut:    errOut,
-		CachePath: cachePath,
+		Store:         store,
+		Client:        client,
+		Keep:          cc.Keep,
+		Rules:         cc.Rules,
+		Out:           out,
+		ErrOut:        errOut,
+		CachePath:     cachePath,
+		SelectionPath: selectionPath(),
 	}, nil
 }
 
@@ -317,6 +318,14 @@ func newUndoCmd(out, errOut io.Writer) *cobra.Command {
 }
 
 // --- undo cache path ---------------------------------------------------
+
+func selectionPath() string {
+	if p := os.Getenv("GCLEAN_SELECTION_PATH"); p != "" {
+		return p
+	}
+	home, _ := os.UserHomeDir()
+	return filepath.Join(home, ".config", "gclean", "tui-selection.json")
+}
 
 func defaultCache() (string, error) {
 	if p := os.Getenv("GCLEAN_UNDO_CACHE"); p != "" {
