@@ -4,11 +4,13 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"net"
 	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"time"
 
 	"golang.org/x/oauth2"
@@ -16,17 +18,9 @@ import (
 	"google.golang.org/api/gmail/v1"
 )
 
-var (
-	// Loopback callback address. Must be `localhost`, NOT `127.0.0.1`:
-	// Google validates the redirect_uri hostname against the URIs
-	// registered on the OAuth client (Desktop clients ship with
-	// `http://localhost` in credentials.json). A 127.0.0.1 mismatch is
-	// rejected with the generic "400. That's an error" page before the
-	// code callback ever fires. The port is ignored for loopback
-	// addresses, so the unregistered `:8080` suffix is fine.
-	oauthListenAddr = "localhost:8080"
-	oauthScopes     = []string{gmail.GmailReadonlyScope, gmail.GmailModifyScope}
-)
+var oauthScopes = []string{gmail.GmailReadonlyScope, gmail.GmailModifyScope}
+
+const oauthListenHost = "localhost"
 
 // tokenPath returns the path to the persisted OAuth token.
 // Honors GCLEAN_TOKEN_PATH; falls back to ~/.config/gclean/token.json.
@@ -42,9 +36,15 @@ func tokenPath() string {
 }
 
 // LoadConfig reads credentials.json and returns an oauth2.Config for the
-// Gmail API. The RedirectURL is forced to the loopback address so the local
-// callback server can capture the auth code.
+// Gmail API. Callers that own a callback server should use
+// LoadConfigWithRedirect so the exact allocated loopback URI is registered.
 func LoadConfig(credentialsPath string) (*oauth2.Config, error) {
+	return LoadConfigWithRedirect(credentialsPath, "http://"+oauthListenHost)
+}
+
+// LoadConfigWithRedirect reads credentials.json and sets the redirect URI
+// used by the OAuth authorization and token-exchange requests.
+func LoadConfigWithRedirect(credentialsPath, redirectURL string) (*oauth2.Config, error) {
 	b, err := os.ReadFile(credentialsPath)
 	if err != nil {
 		return nil, fmt.Errorf("read credentials: %w", err)
@@ -53,7 +53,7 @@ func LoadConfig(credentialsPath string) (*oauth2.Config, error) {
 	if err != nil {
 		return nil, fmt.Errorf("parse credentials: %w", err)
 	}
-	cfg.RedirectURL = "http://" + oauthListenAddr
+	cfg.RedirectURL = redirectURL
 	return cfg, nil
 }
 
@@ -97,17 +97,27 @@ func TokenSource(ctx context.Context, cfg *oauth2.Config, tok *oauth2.Token) oau
 // code from the localhost callback. It shuts down automatically after receiving
 // the code or on timeout.
 type AuthCodeServer struct {
-	server *http.Server
-	code   chan string
-	errCh  chan error
+	server   *http.Server
+	listener net.Listener
+	redirect string
+	code     chan string
+	errCh    chan error
 }
 
-// NewAuthCodeServer starts listening on oauthListenAddr and returns a server
-// ready to receive the callback.
+// NewAuthCodeServer starts listening on an available localhost port and
+// returns a server ready to receive the callback. The redirect URI always uses
+// the registered localhost hostname, even when the listener resolves it to an
+// IPv4 or IPv6 loopback address internally.
 func NewAuthCodeServer() (*AuthCodeServer, error) {
+	listener, err := net.Listen("tcp", oauthListenHost+":0")
+	if err != nil {
+		return nil, fmt.Errorf("listen for OAuth callback: %w", err)
+	}
 	s := &AuthCodeServer{
-		code:  make(chan string, 1),
-		errCh: make(chan error, 1),
+		listener: listener,
+		redirect: "http://" + oauthListenHost + ":" + strconv.Itoa(listener.Addr().(*net.TCPAddr).Port),
+		code:     make(chan string, 1),
+		errCh:    make(chan error, 1),
 	}
 	mux := http.NewServeMux()
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
@@ -126,9 +136,9 @@ func NewAuthCodeServer() (*AuthCodeServer, error) {
 		default:
 		}
 	})
-	s.server = &http.Server{Addr: oauthListenAddr, Handler: mux}
+	s.server = &http.Server{Handler: mux}
 	go func() {
-		if err := s.server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+		if err := s.server.Serve(s.listener); err != nil && err != http.ErrServerClosed {
 			select {
 			case s.errCh <- err:
 			default:
@@ -137,6 +147,10 @@ func NewAuthCodeServer() (*AuthCodeServer, error) {
 	}()
 	return s, nil
 }
+
+// RedirectURL returns the exact redirect URI registered for this callback
+// server.
+func (s *AuthCodeServer) RedirectURL() string { return s.redirect }
 
 // WaitForCode blocks until the authorization code arrives, the server errors,
 // or the timeout expires.
@@ -158,7 +172,11 @@ func (s *AuthCodeServer) WaitForCode(timeout time.Duration) (string, error) {
 func (s *AuthCodeServer) Close() error {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	return s.server.Shutdown(ctx)
+	err := s.server.Shutdown(ctx)
+	if closeErr := s.listener.Close(); err == nil {
+		err = closeErr
+	}
+	return err
 }
 
 // OpenBrowser opens the given URL in the user's default browser.

@@ -34,17 +34,16 @@ func newLoginCmd(out, errOut io.Writer) *cobra.Command {
 				return errors.New("credentials.json missing")
 			}
 
-			cfg, err := gmailclient.LoadConfig(p)
-			if err != nil {
-				return fmt.Errorf("load credentials: %w", err)
-			}
-
 			server, err := gmailclient.NewAuthCodeServer()
 			if err != nil {
 				return fmt.Errorf("start callback server: %w", err)
 			}
 			defer func() { _ = server.Close() }()
 
+			cfg, err := gmailclient.LoadConfigWithRedirect(p, server.RedirectURL())
+			if err != nil {
+				return fmt.Errorf("load credentials: %w", err)
+			}
 			authURL := cfg.AuthCodeURL("gclean-state")
 			_, _ = fmt.Fprintln(out, "Opening browser for Gmail authentication...")
 			if err := gmailclient.OpenBrowser(authURL); err != nil {
