@@ -5,8 +5,11 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"math/rand/v2"
+	"net/http"
 	"net/mail"
 	"net/url"
+	"strconv"
 	"strings"
 	"time"
 
@@ -57,7 +60,19 @@ func NewRealClient(credentialsPath string) (*RealClient, error) {
 const (
 	mutationBatchSize   = 1000
 	maxMutationAttempts = 3
-	mutationRetryDelay  = 100 * time.Millisecond
+
+	// backoffBase is the first exponential-backoff wait. Google's error-handling
+	// guidance recommends starting at 1s and doubling per retry, with up to 1s
+	// of jitter (see jitter below). A 100ms-scale wait burns all attempts inside
+	// the same per-minute quota window and is guaranteed to fail on real 429s.
+	backoffBase = time.Second
+	// backoffCap bounds the exponential backoff (Google recommends 32s max).
+	backoffCap = 32 * time.Second
+	// maxRetryAfterWait caps how long a server-provided Retry-After hint is
+	// honored. Gmail can suggest very long waits on quota exhaustion; a CLI
+	// should fail cleanly with a "try later" error instead of sleeping for
+	// the full duration.
+	maxRetryAfterWait = 60 * time.Second
 )
 
 func (r *RealClient) ListMessages(query string, max int) ([]*models.Message, error) {
@@ -140,13 +155,55 @@ func (r *RealClient) EmptyTrash() error {
 	for start := 0; start < len(ids); start += mutationBatchSize {
 		end := min(start+mutationBatchSize, len(ids))
 		batch := &gmail.BatchDeleteMessagesRequest{Ids: ids[start:end]}
-		if err := r.retryMutation(fmt.Sprintf("empty trash batch %d-%d", start+1, end), func() error {
+		err := r.retryMutation(fmt.Sprintf("empty trash batch %d-%d", start+1, end), func() error {
 			return r.service.Users.Messages.BatchDelete("me", batch).Do()
-		}); err != nil {
-			return err
+		})
+		if err != nil {
+			if isScopeInsufficient(err) {
+				// Google's backend requires the full mail.google.com scope for
+				// batchDelete even though the docs say gmail.modify suffices
+				// (googleapis/google-api-python-client#2710). Fall back to
+				// per-message delete, which works with gmail.modify.
+				slog.Warn("batchDelete not permitted by token scope; falling back to per-message delete", "count", len(batch.Ids))
+				if err := r.deleteIndividually(batch.Ids); err != nil {
+					return err
+				}
+			} else {
+				return err
+			}
 		}
 	}
 	return nil
+}
+
+// deleteIndividually permanently deletes messages one at a time. Used as the
+// EmptyTrash fallback when the token lacks the full-access scope batchDelete
+// requires; delete costs 10 quota units per message, so this is slower than
+// one batchDelete call.
+func (r *RealClient) deleteIndividually(ids []string) error {
+	for i, id := range ids {
+		if err := r.retryMutation("delete message "+id, func() error {
+			return r.service.Users.Messages.Delete("me", id).Do()
+		}); err != nil {
+			return fmt.Errorf("delete message %d/%d (%s): %w", i+1, len(ids), id, err)
+		}
+	}
+	return nil
+}
+
+// isScopeInsufficient reports whether a googleapi error is the 403 the Gmail
+// backend returns when the token's scopes don't cover the endpoint.
+func isScopeInsufficient(err error) bool {
+	var apiErr *googleapi.Error
+	if !errors.As(err, &apiErr) || apiErr.Code != http.StatusForbidden {
+		return false
+	}
+	// Google sometimes returns a plain-text body, so match against both the
+	// parsed message and the raw body.
+	haystack := apiErr.Message + "\n" + apiErr.Body
+	return strings.Contains(haystack, "insufficient authentication scopes") ||
+		strings.Contains(haystack, "ACCESS_TOKEN_SCOPE_INSUFFICIENT") ||
+		strings.Contains(haystack, "insufficientPermissions")
 }
 
 func (r *RealClient) RestoreFromTrash(ids []string) error {
@@ -163,14 +220,68 @@ func (r *RealClient) RestoreFromTrash(ids []string) error {
 
 func (r *RealClient) retryMutation(operation string, fn func() error) error {
 	for attempt := 1; attempt <= maxMutationAttempts; attempt++ {
-		if err := fn(); err == nil {
+		err := fn()
+		if err == nil {
 			return nil
-		} else if attempt == maxMutationAttempts || !isRetryableGmailError(err) {
+		}
+		if attempt == maxMutationAttempts || !isRetryableGmailError(err) {
 			return fmt.Errorf("%s failed after %d attempt(s): %w", operation, attempt, err)
 		}
-		time.Sleep(mutationRetryDelay * time.Duration(1<<(attempt-1)))
+		time.Sleep(retryDelay(attempt, err))
 	}
 	return fmt.Errorf("%s failed", operation)
+}
+
+// retryDelay computes the wait before retrying the attempt that just failed.
+// It is a package variable (not a function) so tests can substitute a fast,
+// deterministic stub — same pattern as oauthListenAddr.
+var retryDelay = defaultRetryDelay
+
+// defaultRetryDelay prefers the server's Retry-After hint (when the error
+// carries one) and otherwise applies Google's recommended jittered
+// exponential backoff: 1s doubling, capped at 32s.
+func defaultRetryDelay(attempt int, err error) time.Duration {
+	if d, ok := retryAfterDelay(err); ok {
+		return d
+	}
+	exp := backoffBase << (attempt - 1)
+	if exp > backoffCap {
+		exp = backoffCap
+	}
+	return exp + jitter()
+}
+
+// jitter returns a random duration in [0, backoffBase), per Google's advice
+// to add up to 1s of randomness to each backoff wait so concurrent clients
+// don't retry in lockstep.
+func jitter() time.Duration {
+	return time.Duration(rand.Int64N(int64(backoffBase)))
+}
+
+// retryAfterDelay reads the Retry-After header from a googleapi error, when
+// present. RFC 7231 allows delta-seconds (what Gmail sends) or an HTTP-date;
+// both are parsed. The wait is capped at maxRetryAfterWait.
+func retryAfterDelay(err error) (time.Duration, bool) {
+	var apiErr *googleapi.Error
+	if !errors.As(err, &apiErr) {
+		return 0, false
+	}
+	header := strings.TrimSpace(apiErr.Header.Get("Retry-After"))
+	if header == "" {
+		return 0, false
+	}
+	var d time.Duration
+	if secs, convErr := strconv.Atoi(header); convErr == nil {
+		d = time.Duration(secs) * time.Second
+	} else if t, parseErr := http.ParseTime(header); parseErr == nil {
+		d = time.Until(t)
+		if d < 0 {
+			d = 0
+		}
+	} else {
+		return 0, false
+	}
+	return min(d, maxRetryAfterWait), true
 }
 
 func isRetryableGmailError(err error) bool {

@@ -18,7 +18,11 @@ import (
 	"google.golang.org/api/gmail/v1"
 )
 
-var oauthScopes = []string{gmail.GmailReadonlyScope, gmail.GmailModifyScope}
+var // mail.google.com (full access) is required in addition to modify: Google's
+// backend rejects both batchDelete and delete with gmail.modify alone
+// (googleapis/google-api-python-client#2710), so purge would be broken
+// without it. Full access is a sensitive scope; the consent screen says so.
+oauthScopes = []string{gmail.GmailReadonlyScope, gmail.GmailModifyScope, gmail.MailGoogleComScope}
 
 const oauthListenHost = "localhost"
 

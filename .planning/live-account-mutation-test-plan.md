@@ -18,10 +18,14 @@ overall pipeline; this plan drills into the mutation path only.
 | `undo` | `newUndoCmd` | Load undo cache → `RestoreFromTrash` (per-ID `Users.Messages.Untrash`, retried) → `RestoreTrashed` (SQLite) → delete cache file. Prints `Restored N messages from Trash.` |
 | `purge --yes` | `newPurgeCmd` | `EmptyTrash`: paginate `LabelIds("TRASH")` at 1,000/page, then `Messages.BatchDelete` in chunks of 1,000, each retried. Afterwards the CLI deletes the undo cache. |
 
-**Retry policy** (`retryMutation`): up to `maxMutationAttempts = 3` attempts per call,
-exponential backoff `mutationRetryDelay * 2^(attempt-1)` (100ms → 200ms). Retryable
-errors: `googleapi.Error` with code `429` or `>= 500`, plus transport failures
-(`*url.Error`). Other 4xx (auth, missing message) fail immediately — no masking.
+**Retry policy** (`retryMutation`): up to `maxMutationAttempts = 3` attempts per call.
+On a retryable failure (`googleapi.Error` with code `429` or `>= 500`, or a transport
+`*url.Error`) the wait is computed by `retryDelay`: the server's `Retry-After` header
+is honored when present (delta-seconds or HTTP-date, capped at
+`maxRetryAfterWait = 60s`); otherwise Google's recommended jittered exponential
+backoff applies (`backoffBase = 1s` doubling, jitter up to 1s, capped at
+`backoffCap = 32s`). Non-retryable 4xx (auth, missing message) fail immediately —
+no masking.
 
 **Safety gates**: `--yes` required by `clean`/`purge`; §15 planner refuses to delete
 non-junk; undo cache is written **before** any Gmail mutation and a cache-write failure
@@ -192,11 +196,12 @@ worth a manual negative test: craft the cohort to include a nonexistent ID (see 
 - **Quota**: under the May 2026 quota model the binding limit is 6,000 units per
   minute per user (per method: `list`=5, `get`=20, `trash`=20, `untrash`=5,
   `batchDelete`=50, `insert`=25). A big `scan` or TC-07 seeding can exhaust the
-  per-minute budget; pace seeding and expect 429s in the logs. The adapter's retry
-  budget (3 attempts, 100ms → 200ms fixed backoff) is far more aggressive than
-  Google's recommended jittered exponential backoff (1s+ doubling, max 32–64s); if
-  sustained 429s appear, revisit `mutationRetryDelay`/`maxMutationAttempts` — and
-  ideally honor the `Retry-After` header on 429s — with observed quota behavior.
+  per-minute budget; pace seeding and expect 429s in the logs. The adapter honors
+  `Retry-After` on 429/5xx (capped at 60s) and otherwise uses Google's recommended
+  jittered exponential backoff (1s doubling, max 32s), 3 attempts per call — worst
+  case ≈ 2 minutes of waiting before a clean "try later" error. If sustained 429s
+  still appear, revisit `maxMutationAttempts` and the 60s Retry-After cap with
+  observed quota behavior. Note the read path (`ListMessages`) has no retry yet.
 - **Cohort quality**: `IsContact` (People API) and `REPLIED` enrichment remain gaps, so
   the delete cohort is what it is; mutation correctness (TC-01…TC-07) is independent of
   those, but G3's "no contact/replied deletions" can only be spot-checked manually.

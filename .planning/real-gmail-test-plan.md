@@ -118,7 +118,7 @@ Actually, the Gmail API's batch endpoint is the right tool here. The `google-gol
 
 ### 2d. Local reconciliation and live validation
 
-The adapter can report partial progress, but `engine.Pipeline` still performs Gmail mutation, SQLite deletion, and undo-cache persistence as separate operations. Add reconciliation and failure-injection tests before broad live-account use. The existing 100ms/200ms retry backoff is intentionally conservative and should be revisited with observed quota behaviour.
+The adapter can report partial progress, but `engine.Pipeline` still performs Gmail mutation, SQLite deletion, and undo-cache persistence as separate operations. Add reconciliation and failure-injection tests before broad live-account use. The mutation retry policy now honors `Retry-After` (capped at 60s) with jittered exponential backoff (1s doubling, max 32s); validate it under real quota pressure and consider extending retries to the read path.
 
 ## Phase 3 — End-to-end test against real data
 
