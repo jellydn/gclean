@@ -28,7 +28,7 @@ addr := defang.MkEmail("noreply", "example.com") // "noreply@example.com"
 
 Real Gmail requires `credentials.json` at `~/.config/gclean/credentials.json` (or `$GCLEAN_CREDENTIALS_PATH`). Run `gclean login` to complete the browser-based OAuth flow; the token is stored at `~/.config/gclean/token.json` by default or at `$GCLEAN_TOKEN_PATH`.
 
-`gclean scan` can then use the real Gmail client without `--fixtures`. The real mutation adapter supports Trash, restore, and purge calls, but local reconciliation and live-account validation are still being hardened. Use `--fixtures` for every local end-to-end cleanup flow:
+`gclean scan` can then use the real Gmail client without `--fixtures`. The real mutation adapter supports Trash, restore, and purge calls. Local reconciliation of partial mutations is implemented (commands ask Gmail via `InTrash` what actually moved and trim the undo cache + local store to match; a 404 means "permanently deleted, not restorable" and is skipped); live-account validation is still pending. Use `--fixtures` for every local end-to-end cleanup flow:
 
 ```bash
 # End-to-end local dev flow:
@@ -40,7 +40,7 @@ gclean clean --yes --fixtures testdata/fixtures/messages.json
 gclean undo  --fixtures testdata/fixtures/messages.json
 ```
 
-`RealClient.ListMessages` in `internal/gmailclient/real.go` is implemented for paginated metadata reads and classification headers. `TrashMessages` and `RestoreFromTrash` use retrying individual Gmail calls; `EmptyTrash` paginates the Trash label and batch-deletes up to 1,000 IDs per request. The engine's local reconciliation and end-to-end real-Gmail cleanup tests remain the next safety layer. Swap implementations at the `gmailclient.Client` interface seam.
+`RealClient.ListMessages` in `internal/gmailclient/real.go` is implemented for paginated metadata reads and classification headers. `TrashMessages` and `RestoreFromTrash` use retrying individual Gmail calls; `EmptyTrash` paginates the Trash label and batch-deletes up to 1,000 IDs per request. Local reconciliation of partial mutations is implemented via the `InTrash` seam (`internal/engine/pipeline.go`, `internal/cli/pipeline.go`); live end-to-end real-Gmail cleanup validation remains the next safety layer. Swap implementations at the `gmailclient.Client` interface seam.
 
 ## Key env vars
 
@@ -66,6 +66,7 @@ gclean undo  --fixtures testdata/fixtures/messages.json
 cmd/gclean/main.go         — slog setup, calls cli.Build()
 internal/cli/              — Cobra command tree (thin handlers; pipeline adapters in pipeline.go)
 internal/engine/           — classifier, protector, evaluator (DSL), planner, pipeline (stages)
+internal/format/           — HumanBytes + Truncate rendering helpers (shared by cli + tui)
 internal/gmailclient/      — Client interface + FakeClient + OAuth-backed RealClient
 internal/storage/          — SQLite via modernc.org/sqlite (no CGO) + undo-cache IO
 internal/config/           — YAML via yaml.v3 (not Viper)
