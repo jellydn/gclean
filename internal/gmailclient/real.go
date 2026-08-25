@@ -218,6 +218,46 @@ func (r *RealClient) RestoreFromTrash(ids []string) error {
 	return nil
 }
 
+// InTrash returns the subset of ids whose TRASH label is present. It is used
+// only on the reconcile path after a partial mutation, so per-ID gets are
+// acceptable despite the read cost; each get carries the message's labelIds.
+//
+// A 404 from Gmail means the message no longer exists (it was permanently
+// deleted by a partial EmptyTrash/batchDelete), which is "not in Trash" —
+// the reconcile must keep scanning the remaining ids and let the caller trim
+// the undo cache, not abort the whole reconcile. Any other error (401/403/
+// 429/5xx) still aborts.
+func (r *RealClient) InTrash(ids []string) ([]string, error) {
+	in := []string{}
+	for i, id := range ids {
+		var msg *gmail.Message
+		if err := r.retryMutation("get message "+id, func() error {
+			var err error
+			msg, err = r.service.Users.Messages.Get("me", id).Format("metadata").Do()
+			return err
+		}); err != nil {
+			if isNotFound(err) {
+				continue
+			}
+			return nil, fmt.Errorf("get message %d/%d (%s): %w", i+1, len(ids), id, err)
+		}
+		for _, l := range msg.LabelIds {
+			if l == "TRASH" {
+				in = append(in, id)
+				break
+			}
+		}
+	}
+	return in, nil
+}
+
+// isNotFound reports whether err is a googleapi 404 (the Gmail error shape
+// for a message that has been permanently deleted).
+func isNotFound(err error) bool {
+	var apiErr *googleapi.Error
+	return errors.As(err, &apiErr) && apiErr.Code == http.StatusNotFound
+}
+
 func (r *RealClient) retryMutation(operation string, fn func() error) error {
 	for attempt := 1; attempt <= maxMutationAttempts; attempt++ {
 		err := fn()

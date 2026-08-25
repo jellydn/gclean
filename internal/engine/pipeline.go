@@ -45,6 +45,7 @@ type Gmailer interface {
 	ListMessages(query string, max int) ([]*models.Message, error)
 	TrashMessages(ids []string) error
 	RestoreFromTrash(ids []string) error
+	InTrash(ids []string) ([]string, error)
 }
 
 // Writer is the minimal output sink (io.Writer) the stages print to.
@@ -142,21 +143,78 @@ func (p *Pipeline) applyTrash(pl *Pipeline) error {
 		ids = append(ids, d.Message.ID)
 		toTrash = append(toTrash, storage.FromClassified(d.Classified, models.VerdictDelete))
 	}
-	if len(ids) > 0 {
-		if pl.CachePath != "" {
-			if err := storage.SaveUndoCache(pl.CachePath, toTrash); err != nil {
-				return fmt.Errorf("save undo cache: %w", err)
-			}
+	if len(ids) == 0 {
+		return nil
+	}
+	if pl.CachePath != "" {
+		if err := storage.SaveUndoCache(pl.CachePath, toTrash); err != nil {
+			return fmt.Errorf("save undo cache: %w", err)
 		}
-		if err := pl.Client.TrashMessages(ids); err != nil {
-			return fmt.Errorf("trash: %w", err)
+	}
+	trashErr := pl.Client.TrashMessages(ids)
+	if trashErr != nil {
+		// Reconcile a partial failure: find which messages actually made it
+		// to Trash server-side, trim the undo cache and the local mark to
+		// match, then fail loudly so the user knows the operation was
+		// partial. Without this, Gmail state and local state silently drift.
+		trashed, inErr := pl.Client.InTrash(ids)
+		if inErr != nil {
+			return fmt.Errorf("trash: %w (reconcile failed: %v)", trashErr, inErr)
 		}
-		if err := pl.Store.MarkTrashed(ids); err != nil {
-			return fmt.Errorf("mark trashed: %w", err)
+		if err := reconcileTrash(pl, toTrash, trashed); err != nil {
+			return fmt.Errorf("trash: %w (reconcile: %v)", trashErr, err)
 		}
+		switch {
+		case len(trashed) == 0:
+			return fmt.Errorf("trash: no messages moved to Trash: %w", trashErr)
+		case len(trashed) < len(ids):
+			return fmt.Errorf("trash partially applied: %d of %d messages moved to Trash: %w", len(trashed), len(ids), trashErr)
+		default:
+			return fmt.Errorf("trash: %w", trashErr)
+		}
+	}
+	if err := pl.Store.MarkTrashed(ids); err != nil {
+		// Gmail moved the cohort but the local mark failed; reconcile against
+		// Gmail's actual state so the store rows and undo cache don't drift
+		// (retry would otherwise die on the existing undo cache).
+		trashed, inErr := pl.Client.InTrash(ids)
+		if inErr != nil {
+			return fmt.Errorf("mark trashed: %w (reconcile failed: %v)", err, inErr)
+		}
+		if rerr := reconcileTrash(pl, toTrash, trashed); rerr != nil {
+			return fmt.Errorf("mark trashed: %w (reconcile: %v)", err, rerr)
+		}
+		return fmt.Errorf("mark trashed: %w", err)
 	}
 	pl.trashedIDs = ids
 	pl.trashedRecords = toTrash
+	return nil
+}
+
+// reconcileTrash trims the undo cache and the local mark so they reflect only
+// the messages that actually reached Gmail's Trash after a partial failure.
+// It fails loudly if the cache cannot be rewritten.
+func reconcileTrash(pl *Pipeline, records []storage.StoredMessage, trashed []string) error {
+	kept := make([]storage.StoredMessage, 0, len(trashed))
+	inTrash := make(map[string]struct{}, len(trashed))
+	for _, id := range trashed {
+		inTrash[id] = struct{}{}
+	}
+	for _, r := range records {
+		if _, ok := inTrash[r.ID]; ok {
+			kept = append(kept, r)
+		}
+	}
+	if pl.CachePath != "" {
+		if err := storage.ReplaceOrRemoveUndoCache(pl.CachePath, kept); err != nil {
+			return err
+		}
+	}
+	if err := pl.Store.MarkTrashed(trashed); err != nil {
+		return err
+	}
+	pl.trashedIDs = trashed
+	pl.trashedRecords = kept
 	return nil
 }
 

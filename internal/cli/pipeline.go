@@ -14,6 +14,7 @@ import (
 	"gclean/internal/config"
 	"gclean/internal/engine"
 	"gclean/internal/format"
+	"gclean/internal/gmailclient"
 	"gclean/internal/storage"
 )
 
@@ -254,15 +255,16 @@ func newPurgeCmd(out, errOut io.Writer) *cobra.Command {
 				_, _ = fmt.Fprintln(errOut, "Refusing to purge without --yes. Re-run with --yes to confirm.")
 				return errors.New("confirmation required")
 			}
+			cache, _ := defaultCache()
+			records, _ := storage.LoadUndoCache(cache) // best-effort; may be absent
 			client, err := resolveClient(fixtures, credentialsPath())
 			if err != nil {
 				return err
 			}
-			if err := client.EmptyTrash(); err != nil {
+			if err := purgeWithReconcile(client, records, cache); err != nil {
 				return err
 			}
 			_, _ = fmt.Fprintln(out, "Trash emptied. Storage reclaimed from Gmail's side.")
-			cache, _ := defaultCache()
 			_ = os.Remove(cache)
 			return nil
 		},
@@ -294,19 +296,12 @@ func newUndoCmd(out, errOut io.Writer) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			ids := make([]string, 0, len(records))
-			for _, r := range records {
-				ids = append(ids, r.ID)
-			}
-			if err := client.RestoreFromTrash(ids); err != nil {
-				return err
-			}
 			store, err := storage.Open(storePath())
 			if err != nil {
 				return err
 			}
 			defer func() { _ = store.Close() }()
-			if err := store.RestoreTrashed(records); err != nil {
+			if err := undoWithReconcile(client, store, records, cache); err != nil {
 				return err
 			}
 			_, _ = fmt.Fprintf(out, "Restored %d messages from Trash.\n", len(records))
@@ -319,6 +314,123 @@ func newUndoCmd(out, errOut io.Writer) *cobra.Command {
 }
 
 // --- undo cache path ---------------------------------------------------
+
+// undoWithReconcile restores records from Trash, reconciling a partial
+// failure so the local store and undo cache reflect Gmail's actual state:
+// only the messages actually restored are re-inserted, and the cache is
+// trimmed to the ones still in Trash so `gclean undo` can be retried.
+func undoWithReconcile(client gmailclient.Client, store *storage.Store, records []storage.StoredMessage, cachePath string) error {
+	ids := recordIDs(records)
+	restoreErr := client.RestoreFromTrash(ids)
+	if restoreErr != nil {
+		// Reconcile a partial restore: re-insert what Gmail actually restored
+		// and trim the cache to what is still in Trash so undo can retry.
+		restored, rerr := reconcileRestore(client, store, records, cachePath)
+		if rerr != nil {
+			return fmt.Errorf("restore: %w (reconcile: %v)", restoreErr, rerr)
+		}
+		if len(restored) == 0 {
+			return fmt.Errorf("restore: no messages restored: %w", restoreErr)
+		}
+		return fmt.Errorf("restore partially applied: %d of %d messages restored: %w", len(restored), len(ids), restoreErr)
+	}
+	if err := store.RestoreTrashed(records); err != nil {
+		// Gmail restored everything but the local re-insert failed; reconcile
+		// so the store rows and undo cache reflect Gmail's actual state.
+		if _, rerr := reconcileRestore(client, store, records, cachePath); rerr != nil {
+			return fmt.Errorf("restore: %w (reconcile: %v)", err, rerr)
+		}
+		return fmt.Errorf("restore: %w", err)
+	}
+	return nil
+}
+
+// reconcileRestore asks Gmail which ids are still in Trash, re-inserts the
+// ones that were actually restored, and trims the undo cache to the survivors
+// (removing it entirely when nothing remains). Returns the ids actually
+// restored so callers can report the partial result.
+func reconcileRestore(client gmailclient.Client, store *storage.Store, records []storage.StoredMessage, cachePath string) ([]string, error) {
+	ids := recordIDs(records)
+	still, err := client.InTrash(ids)
+	if err != nil {
+		return nil, err
+	}
+	restored := subtractIDs(ids, still)
+	if err := store.RestoreTrashed(filterRecords(records, restored)); err != nil {
+		return nil, err
+	}
+	if err := storage.ReplaceOrRemoveUndoCache(cachePath, filterRecords(records, still)); err != nil {
+		return nil, err
+	}
+	return restored, nil
+}
+
+// purgeWithReconcile empties Trash, keeping (and trimming) the undo cache to
+// the messages still in Trash on a partial failure so `gclean undo` can still
+// recover them. If the cohort is fully purged (InTrash finds nothing, e.g.
+// the failing page came after the gclean cohort was deleted), the stale cache
+// is removed so undo cannot point at permanently deleted IDs. A full success
+// returns nil and the caller deletes the cache.
+func purgeWithReconcile(client gmailclient.Client, records []storage.StoredMessage, cachePath string) error {
+	if err := client.EmptyTrash(); err != nil {
+		if len(records) > 0 {
+			still, inErr := client.InTrash(recordIDs(records))
+			if inErr != nil {
+				return fmt.Errorf("purge: %w (reconcile failed: %v)", err, inErr)
+			}
+			if len(still) > 0 {
+				if err2 := storage.ReplaceUndoCache(cachePath, filterRecords(records, still)); err2 != nil {
+					return fmt.Errorf("purge: %w (reconcile cache rewrite failed: %v)", err, err2)
+				}
+				return fmt.Errorf("purge partially applied: %d messages remain in Trash: %w", len(still), err)
+			}
+			if err2 := storage.ReplaceOrRemoveUndoCache(cachePath, nil); err2 != nil {
+				return fmt.Errorf("purge: %w (reconcile cache remove failed: %v)", err, err2)
+			}
+		}
+		return err
+	}
+	return nil
+}
+
+// recordIDs extracts the message IDs from undo-cache records.
+func recordIDs(records []storage.StoredMessage) []string {
+	ids := make([]string, 0, len(records))
+	for _, r := range records {
+		ids = append(ids, r.ID)
+	}
+	return ids
+}
+
+// filterRecords returns the records whose ID is in ids, preserving order.
+func filterRecords(records []storage.StoredMessage, ids []string) []storage.StoredMessage {
+	keep := make(map[string]struct{}, len(ids))
+	for _, id := range ids {
+		keep[id] = struct{}{}
+	}
+	out := make([]storage.StoredMessage, 0, len(ids))
+	for _, r := range records {
+		if _, ok := keep[r.ID]; ok {
+			out = append(out, r)
+		}
+	}
+	return out
+}
+
+// subtractIDs returns all minus remove, preserving order.
+func subtractIDs(all, remove []string) []string {
+	rm := make(map[string]struct{}, len(remove))
+	for _, id := range remove {
+		rm[id] = struct{}{}
+	}
+	out := make([]string, 0, len(all))
+	for _, id := range all {
+		if _, ok := rm[id]; !ok {
+			out = append(out, id)
+		}
+	}
+	return out
+}
 
 func selectionPath() string {
 	if p := os.Getenv("GCLEAN_SELECTION_PATH"); p != "" {
