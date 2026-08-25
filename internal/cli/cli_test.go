@@ -7,7 +7,6 @@ package cli
 import (
 	"bytes"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -19,6 +18,7 @@ import (
 	"gclean/internal/config"
 	"gclean/internal/defang"
 	"gclean/internal/engine"
+	"gclean/internal/gmailclient"
 	"gclean/internal/models"
 	"gclean/internal/storage"
 )
@@ -573,98 +573,12 @@ func TestDevCommand_OneShotMode_RendersPipeline(t *testing.T) {
 // --------------------------------------------------------------------------
 // Mutation-path reconciliation tests.
 //
-// partialClient simulates a Gmail backend that fails a mutation partway and
-// reports the actual server-side state via InTrash, so the reconcile paths in
-// clean / undo / purge can be tested without network.
+// These simulate a Gmail backend that fails a mutation partway and reports
+// the actual server-side state via InTrash, so the reconcile paths in clean /
+// undo / purge can be tested without network. The failure-injection knobs
+// (FailTrashAfter / FailRestore / FailEmpty / FailEmptyKeep / Delete) live on
+// gmailclient.FakeClient — there is no bespoke test double here.
 // --------------------------------------------------------------------------
-
-// partialClient implements gmailclient.Client with controllable partial
-// failures.
-//
-//   - failTrashAfter >= 0: TrashMessages trashes only the first N ids then
-//     errors (-1 disables).
-//   - failRestore >= 0: RestoreFromTrash restores only the ids before that
-//     index then errors.
-//   - failEmpty: EmptyTrash permanently deletes every id NOT in
-//     failEmptyKeep, then errors (simulating a partial purge); deleted ids
-//     move into the `deleted` set, which RestoreFromTrash/InTrash treat as
-//     404s (gone forever, not restorable).
-//
-// InTrash always reflects the simulated server-side state.
-type partialClient struct {
-	trashed        map[string]bool
-	deleted        map[string]bool
-	failTrashAfter int
-	failRestore    int
-	failEmpty      bool
-	failEmptyKeep  map[string]bool
-}
-
-func newPartialClient() *partialClient {
-	return &partialClient{trashed: map[string]bool{}, deleted: map[string]bool{}, failTrashAfter: -1, failRestore: -1}
-}
-
-func (c *partialClient) ListMessages(string, int) ([]*models.Message, error) { return nil, nil }
-
-func (c *partialClient) TrashMessages(ids []string) error {
-	if c.failTrashAfter >= 0 {
-		for _, id := range ids[:min(c.failTrashAfter, len(ids))] {
-			c.trashed[id] = true
-		}
-		return errors.New("simulated trash failure")
-	}
-	for _, id := range ids {
-		c.trashed[id] = true
-	}
-	return nil
-}
-
-func (c *partialClient) EmptyTrash() error {
-	if c.failEmpty {
-		for id := range c.trashed {
-			if !c.failEmptyKeep[id] {
-				delete(c.trashed, id)
-				c.deleted[id] = true
-			}
-		}
-		return errors.New("simulated empty-trash failure")
-	}
-	c.trashed = map[string]bool{}
-	c.deleted = map[string]bool{}
-	return nil
-}
-
-func (c *partialClient) RestoreFromTrash(ids []string) ([]string, error) {
-	restored := []string{}
-	if c.failRestore >= 0 {
-		for _, id := range ids[:min(c.failRestore, len(ids))] {
-			if c.deleted[id] {
-				continue // permanently deleted: skip like a real 404
-			}
-			delete(c.trashed, id)
-			restored = append(restored, id)
-		}
-		return restored, errors.New("simulated restore failure")
-	}
-	for _, id := range ids {
-		if c.deleted[id] {
-			continue // permanently deleted: skip like a real 404
-		}
-		delete(c.trashed, id)
-		restored = append(restored, id)
-	}
-	return restored, nil
-}
-
-func (c *partialClient) InTrash(ids []string) ([]string, error) {
-	var in []string
-	for _, id := range ids {
-		if c.trashed[id] {
-			in = append(in, id)
-		}
-	}
-	return in, nil
-}
 
 // seedJunkStore writes two old, junk messages from the same sender so the
 // planner's delete rule matches both and Protect() does not protect them.
@@ -708,8 +622,8 @@ func TestClean_PartialTrashReconcilesCacheAndStore(t *testing.T) {
 
 	seedJunkStore(t, dbPath, "m1", "m2")
 
-	client := newPartialClient()
-	client.failTrashAfter = 1 // only the first message reaches Trash
+	client := gmailclient.NewFakeClientFromMessages(nil)
+	client.FailTrashAfter = 1 // only the first message reaches Trash
 
 	store, err := storage.Open(dbPath)
 	if err != nil {
@@ -717,7 +631,7 @@ func TestClean_PartialTrashReconcilesCacheAndStore(t *testing.T) {
 	}
 	defer func() { _ = store.Close() }()
 
-	p, err := buildPipeline(store, client, junkDeleteDoc(), &bytes.Buffer{}, &bytes.Buffer{}, cachePath)
+	p, err := buildPipeline(store, client, junkDeleteDoc(), cachePath)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -766,12 +680,14 @@ func TestUndo_PartialRestoreReconciles(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	client := newPartialClient()
-	client.trashed["m1"] = true
-	client.trashed["m2"] = true
-	client.failRestore = 1 // restores the first id, then fails
+	client := gmailclient.NewFakeClientFromMessages(nil)
+	if err := client.TrashMessages([]string{"m1", "m2"}); err != nil {
+		t.Fatal(err)
+	}
+	client.FailRestore = 1 // restores the first id, then fails
 
-	_, err = undoWithReconcile(client, store, records, cachePath)
+	rc := engine.Reconciler{Store: store, CachePath: cachePath}
+	_, err = rc.Undo(client, records)
 	if err == nil || !strings.Contains(err.Error(), "partially applied") {
 		t.Fatalf("want partial-restore error, got %v", err)
 	}
@@ -821,11 +737,14 @@ func TestUndo_AfterPartialPurgeSkipsDeletedRestoresSurvivors(t *testing.T) {
 	// Partial-purge aftermath: m1 permanently deleted (404), m2 still in
 	// Trash, but the cache still lists both (e.g. the purge reconcile was
 	// interrupted before trimming).
-	client := newPartialClient()
-	client.trashed["m2"] = true
-	client.deleted["m1"] = true
+	client := gmailclient.NewFakeClientFromMessages(nil)
+	if err := client.TrashMessages([]string{"m2"}); err != nil {
+		t.Fatal(err)
+	}
+	client.Delete([]string{"m1"})
 
-	if _, err := undoWithReconcile(client, store, records, cachePath); err != nil {
+	rc := engine.Reconciler{Store: store, CachePath: cachePath}
+	if _, err := rc.Undo(client, records); err != nil {
 		t.Fatalf("undo after partial purge: %v", err)
 	}
 
@@ -855,13 +774,15 @@ func TestPurge_PartialEmptyReconciles(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	client := newPartialClient()
-	client.trashed["m1"] = true
-	client.trashed["m2"] = true
-	client.failEmpty = true
-	client.failEmptyKeep = map[string]bool{"m2": true} // m1 purged, m2 still in Trash
+	client := gmailclient.NewFakeClientFromMessages(nil)
+	if err := client.TrashMessages([]string{"m1", "m2"}); err != nil {
+		t.Fatal(err)
+	}
+	client.FailEmpty = true
+	client.FailEmptyKeep = map[string]bool{"m2": true} // m1 purged, m2 still in Trash
 
-	err := purgeWithReconcile(client, records, cachePath)
+	rc := engine.Reconciler{CachePath: cachePath}
+	err := rc.Purge(client, records)
 	if err == nil || !strings.Contains(err.Error(), "partially applied") {
 		t.Fatalf("want partial-purge error, got %v", err)
 	}
@@ -890,8 +811,8 @@ func TestClean_NoMessagesMovedRemovesCache(t *testing.T) {
 
 	seedJunkStore(t, dbPath, "m1", "m2")
 
-	client := newPartialClient()
-	client.failTrashAfter = 0 // no message reaches Trash
+	client := gmailclient.NewFakeClientFromMessages(nil)
+	client.FailTrashAfter = 0 // no message reaches Trash
 
 	store, err := storage.Open(dbPath)
 	if err != nil {
@@ -899,7 +820,7 @@ func TestClean_NoMessagesMovedRemovesCache(t *testing.T) {
 	}
 	defer func() { _ = store.Close() }()
 
-	p, err := buildPipeline(store, client, junkDeleteDoc(), &bytes.Buffer{}, &bytes.Buffer{}, cachePath)
+	p, err := buildPipeline(store, client, junkDeleteDoc(), cachePath)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -941,13 +862,15 @@ func TestPurge_AllRecordsPurgedRemovesCache(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	client := newPartialClient()
-	client.trashed["m1"] = true
-	client.trashed["m2"] = true
-	client.failEmpty = true
-	client.failEmptyKeep = map[string]bool{} // everything purged, but EmptyTrash failed on a later page
+	client := gmailclient.NewFakeClientFromMessages(nil)
+	if err := client.TrashMessages([]string{"m1", "m2"}); err != nil {
+		t.Fatal(err)
+	}
+	client.FailEmpty = true
+	client.FailEmptyKeep = map[string]bool{} // everything purged, but EmptyTrash failed on a later page
 
-	err := purgeWithReconcile(client, records, cachePath)
+	rc := engine.Reconciler{CachePath: cachePath}
+	err := rc.Purge(client, records)
 	if err == nil {
 		t.Fatalf("want purge error, got nil")
 	}

@@ -2,6 +2,7 @@ package gmailclient
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -18,10 +19,31 @@ import (
 // Trash/Restore/EmptyTrash mutate in-memory state only. The fixture file is
 // the source of truth and is not modified. This lets us demo the full
 // pipeline without an OAuth round-trip.
+//
+// The exported Fail* fields are failure-injection knobs for tests (zero value
+// = no failure). They let a test simulate a Gmail backend that fails a
+// mutation partway and reports the actual server-side state via InTrash, so
+// the reconcile paths in clean / undo / purge are exercised without a custom
+// test double:
+//
+//   - FailTrashAfter >= 0: TrashMessages trashes only the first N ids then
+//     errors (-1 disables).
+//   - FailRestore >= 0: RestoreFromTrash restores only the ids before that
+//     index then errors (-1 disables).
+//   - FailEmpty: EmptyTrash permanently deletes every id NOT in FailEmptyKeep
+//     (simulating a partial purge), then errors; deleted ids move into the
+//     deleted set, which RestoreFromTrash/InTrash treat as 404s (gone
+//     forever, not restorable).
 type FakeClient struct {
 	mu      sync.Mutex
 	msgs    []*models.Message
 	trashed map[string]bool
+	deleted map[string]bool
+
+	FailTrashAfter int
+	FailRestore    int
+	FailEmpty      bool
+	FailEmptyKeep  map[string]bool
 }
 
 // NewFakeClient loads a fixture JSON file (an array of Gmail-shaped messages).
@@ -60,14 +82,14 @@ func NewFakeClient(path string) (*FakeClient, error) {
 			msgs[i].Headers = map[string]string{}
 		}
 	}
-	return &FakeClient{msgs: msgs, trashed: map[string]bool{}}, nil
+	return &FakeClient{msgs: msgs, trashed: map[string]bool{}, deleted: map[string]bool{}, FailTrashAfter: -1, FailRestore: -1}, nil
 }
 
 // NewFakeClientFromMessages builds an in-memory fake without disk I/O.
 func NewFakeClientFromMessages(msgs []*models.Message) *FakeClient {
 	cp := make([]*models.Message, len(msgs))
 	copy(cp, msgs)
-	return &FakeClient{msgs: cp, trashed: map[string]bool{}}
+	return &FakeClient{msgs: cp, trashed: map[string]bool{}, deleted: map[string]bool{}, FailTrashAfter: -1, FailRestore: -1}
 }
 
 func (f *FakeClient) ListMessages(query string, max int) ([]*models.Message, error) {
@@ -98,6 +120,13 @@ func (f *FakeClient) ListMessages(query string, max int) ([]*models.Message, err
 func (f *FakeClient) TrashMessages(ids []string) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	if f.FailTrashAfter >= 0 {
+		n := min(f.FailTrashAfter, len(ids))
+		for _, id := range ids[:n] {
+			f.trashed[id] = true
+		}
+		return errors.New("simulated trash failure")
+	}
 	for _, id := range ids {
 		f.trashed[id] = true
 	}
@@ -107,23 +136,59 @@ func (f *FakeClient) TrashMessages(ids []string) error {
 func (f *FakeClient) EmptyTrash() error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	if f.FailEmpty {
+		for id := range f.trashed {
+			if !f.FailEmptyKeep[id] {
+				delete(f.trashed, id)
+				f.deleted[id] = true
+			}
+		}
+		return errors.New("simulated empty-trash failure")
+	}
 	f.trashed = map[string]bool{}
+	f.deleted = map[string]bool{}
 	return nil
 }
 
 // RestoreFromTrash untrashes the given IDs and returns the subset actually
-// restored (those that were in the in-memory trash).
+// restored (those that were in the in-memory trash). A permanently deleted id
+// (see Delete) is skipped like a real 404, not an error.
 func (f *FakeClient) RestoreFromTrash(ids []string) ([]string, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	restored := []string{}
+	if f.FailRestore >= 0 {
+		for _, id := range ids[:min(f.FailRestore, len(ids))] {
+			if f.deleted[id] {
+				continue // permanently deleted: skip like a real 404
+			}
+			delete(f.trashed, id)
+			restored = append(restored, id)
+		}
+		return restored, errors.New("simulated restore failure")
+	}
 	for _, id := range ids {
+		if f.deleted[id] {
+			continue // permanently deleted: skip like a real 404
+		}
 		if f.trashed[id] {
 			delete(f.trashed, id)
 			restored = append(restored, id)
 		}
 	}
 	return restored, nil
+}
+
+// Delete marks ids as permanently deleted (404) — used by tests to model the
+// aftermath of a partial purge: the message is gone from Gmail for good, so
+// RestoreFromTrash skips it and InTrash never reports it.
+func (f *FakeClient) Delete(ids []string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	for _, id := range ids {
+		f.deleted[id] = true
+		delete(f.trashed, id)
+	}
 }
 
 // InTrash returns the subset of ids that are currently trashed in the

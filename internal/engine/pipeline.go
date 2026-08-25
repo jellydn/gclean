@@ -23,8 +23,6 @@ type Pipeline struct {
 	Client Gmailer
 	Keep   KeepConfig
 	Rules  RuleConfig
-	Out    Writer
-	ErrOut Writer
 	// CachePath is the undo-cache file the Apply stage writes to. Empty
 	// disables caching (some callers, e.g. dry-run, don't trash).
 	CachePath     string
@@ -45,11 +43,6 @@ type Gmailer interface {
 	ListMessages(query string, max int) ([]*models.Message, error)
 	TrashMessages(ids []string) error
 	InTrash(ids []string) ([]string, error)
-}
-
-// Writer is the minimal output sink (io.Writer) the stages print to.
-type Writer interface {
-	Write(p []byte) (int, error)
 }
 
 // Stage is one step of the pipeline. Each stage mutates the shared Pipeline
@@ -131,7 +124,10 @@ func (p *Pipeline) loadPlan(pl *Pipeline) error {
 }
 
 // applyTrash moves the delete cohort to Trash and stashes the originals for
-// undo. It is the ONLY stage that performs Gmail mutation.
+// undo. It is the ONLY stage that performs Gmail mutation. Reconcile-after-
+// failure lives in Reconciler; this stage builds one from the pipeline's
+// local-state dependencies and reports the trashed subset back onto the
+// pipeline state for the CLI to render.
 func (p *Pipeline) applyTrash(pl *Pipeline) error {
 	ids := []string{}
 	toTrash := []storage.StoredMessage{}
@@ -150,16 +146,19 @@ func (p *Pipeline) applyTrash(pl *Pipeline) error {
 			return fmt.Errorf("save undo cache: %w", err)
 		}
 	}
+	rc := &Reconciler{Store: pl.Store, CachePath: pl.CachePath}
 	trashErr := pl.Client.TrashMessages(ids)
 	if trashErr != nil {
 		// Reconcile a partial failure: find which messages actually made it
 		// to Trash server-side, trim the undo cache and the local mark to
 		// match, then fail loudly so the user knows the operation was
 		// partial. Without this, Gmail state and local state silently drift.
-		trashed, rerr := reconcileTrashFailure(pl, toTrash, ids, "trash", trashErr)
+		trashed, rerr := rc.ReconcileTrashFailure(pl.Client, toTrash, ids, "trash", trashErr)
 		if rerr != nil {
 			return rerr
 		}
+		pl.trashedIDs = trashed
+		pl.trashedRecords = storage.FilterRecords(toTrash, trashed)
 		switch {
 		case len(trashed) == 0:
 			return fmt.Errorf("trash: no messages moved to Trash: %w", trashErr)
@@ -173,46 +172,16 @@ func (p *Pipeline) applyTrash(pl *Pipeline) error {
 		// Gmail moved the cohort but the local mark failed; reconcile against
 		// Gmail's actual state so the store rows and undo cache don't drift
 		// (retry would otherwise die on the existing undo cache).
-		if _, rerr := reconcileTrashFailure(pl, toTrash, ids, "mark trashed", err); rerr != nil {
+		trashed, rerr := rc.ReconcileTrashFailure(pl.Client, toTrash, ids, "mark trashed", err)
+		if rerr != nil {
 			return rerr
 		}
+		pl.trashedIDs = trashed
+		pl.trashedRecords = storage.FilterRecords(toTrash, trashed)
 		return fmt.Errorf("mark trashed: %w", err)
 	}
 	pl.trashedIDs = ids
 	pl.trashedRecords = toTrash
-	return nil
-}
-
-// reconcileTrashFailure reconciles a failed trash against Gmail's actual
-// state: it asks which ids reached Trash, trims the undo cache and the local
-// mark to match, and wraps the original failure with a named prefix. It
-// returns the ids actually in Trash so the caller can report partial progress.
-func reconcileTrashFailure(pl *Pipeline, toTrash []storage.StoredMessage, ids []string, prefix string, cause error) ([]string, error) {
-	trashed, inErr := pl.Client.InTrash(ids)
-	if inErr != nil {
-		return nil, fmt.Errorf("%s: %w (reconcile failed: %v)", prefix, cause, inErr)
-	}
-	if err := reconcileTrash(pl, toTrash, trashed); err != nil {
-		return nil, fmt.Errorf("%s: %w (reconcile: %v)", prefix, cause, err)
-	}
-	return trashed, nil
-}
-
-// reconcileTrash trims the undo cache and the local mark so they reflect only
-// the messages that actually reached Gmail's Trash after a partial failure.
-// It fails loudly if the cache cannot be rewritten.
-func reconcileTrash(pl *Pipeline, records []storage.StoredMessage, trashed []string) error {
-	kept := storage.FilterRecords(records, trashed)
-	if pl.CachePath != "" {
-		if err := storage.ReplaceOrRemoveUndoCache(pl.CachePath, kept); err != nil {
-			return err
-		}
-	}
-	if err := pl.Store.MarkTrashed(trashed); err != nil {
-		return err
-	}
-	pl.trashedIDs = trashed
-	pl.trashedRecords = kept
 	return nil
 }
 
