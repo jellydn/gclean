@@ -13,21 +13,11 @@ import (
 	"gclean/internal/models"
 )
 
-// SenderRow flattens one models.SenderSafety into the render path.
-type SenderRow struct {
-	Email       string
-	TotalCount  int64
-	TotalBytes  int64
-	DeleteCount int64
-	DeleteBytes int64
-	KeepCount   int64
-	Reasons     []string
-}
-
 // Model is the bubbletea Model. State lives on this struct so Update can
-// be tested without a tea runtime.
+// be tested without a tea runtime. Rows are models.SenderSafety directly —
+// there is no render-path copy of the report vocabulary to keep in sync.
 type Model struct {
-	rows      []SenderRow
+	rows      []models.SenderSafety
 	cursor    int
 	selected  map[string]bool // sender email → user-toggled
 	width     int
@@ -39,19 +29,10 @@ type Model struct {
 // NewModel ingests sender-safety rows and pre-selects every sender with at
 // least one delete candidate (matches the §12 "Safe to delete" starter set).
 func NewModel(safeties []models.SenderSafety) Model {
-	rows := make([]SenderRow, len(safeties))
+	rows := append([]models.SenderSafety(nil), safeties...)
 	sel := map[string]bool{}
-	for i, s := range safeties {
-		rows[i] = SenderRow{
-			Email:       s.Email,
-			TotalCount:  s.TotalCount,
-			TotalBytes:  s.TotalBytes,
-			DeleteCount: s.DeleteCount,
-			DeleteBytes: s.DeleteBytes,
-			KeepCount:   s.KeepCount,
-			Reasons:     s.Reasons,
-		}
-		// Pre-select: ONLY senders with at least one delete candidate.
+	// Pre-select: ONLY senders with at least one delete candidate.
+	for _, s := range rows {
 		if s.DeleteCount > 0 {
 			sel[s.Email] = true
 		}
@@ -223,7 +204,7 @@ func (m Model) commitSummaryView() string {
 		title, senders, msgs, format.HumanBytes(bytes))
 }
 
-func totalDeleteBytes(rows []SenderRow) int64 {
+func totalDeleteBytes(rows []models.SenderSafety) int64 {
 	var b int64
 	for _, r := range rows {
 		b += r.DeleteBytes
