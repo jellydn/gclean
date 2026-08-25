@@ -5,7 +5,7 @@
 ├── cmd/gclean/main.go          Entry point: slog setup + cli.Build().ExecuteContext
 ├── internal/
 │   ├── cli/                    Cobra command tree (thin handlers)
-│   │   ├── cli.go              Build() root + resolveClient/storePath/credentialsPath/humanBytes
+│   │   ├── cli.go              Build() root + resolveClient/storePath/credentialsPath
 │   │   ├── auth.go             login / logout (OAuth browser flow)
 │   │   ├── pipeline.go         scan / stats / dry-run / clean / purge / undo + undo-cache path
 │   │   ├── insights.go         sender / attachments / newsletters / receipts + saveSelection
@@ -25,6 +25,8 @@
 │   │   ├── planner.go          Plan() verdicts + RuleConfig + safety §15
 │   │   ├── pipeline.go         Pipeline + Stage seam (scan→plan→apply)
 │   │   └── *_test.go           classifier/protector/evaluator/planner tests
+│   ├── format/
+│   │   └── format.go           HumanBytes + Truncate (consolidated from cli + tui)
 │   ├── gmailclient/            Gmail boundary seam
 │   │   ├── client.go           Client interface (List/Trash/EmptyTrash/Restore)
 │   │   ├── fake.go             FakeClient — fixture-driven, in-memory trash

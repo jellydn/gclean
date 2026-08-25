@@ -77,11 +77,10 @@
 
 ## Tech debt / code quality
 
-- **Duplicated helpers**: `humanBytes` exists in `internal/cli/cli.go` and
-  again in `internal/tui/app.go`; `truncate` in `internal/cli/insights.go`
-  and `internal/tui/app.go`; `mkT` (tui test) duplicates `defang.MkEmail`.
+- **Duplicated helpers**: `mkT` (tui test) duplicates `defang.MkEmail`.
   `.plans/implement-notes.md` suggests lifting shared helpers into a
-  `internal/util/` package when a second consumer appears.
+  `internal/util/` package when a second consumer appears. (`humanBytes`
+  and `truncate` were consolidated into `internal/format`.)
 - **`internal/engine/pipeline.go` duplicates the StoredMessage construction**
   between `fetchAndClassify` and `applyTrash` (two near-identical
   `StoredMessage{...}` literals).
