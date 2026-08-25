@@ -2,13 +2,18 @@
 
 ## Safety / correctness (highest priority)
 
-- **Real-Gmail local reconciliation is still being hardened.** `clean`,
-  `undo`, and `purge` mutate Gmail and SQLite/undo-cache as separate
-  operations with no transaction spanning both. A partial or interrupted run
-  can leave local state out of sync with Gmail. AGENTS.md and both
-  `.planning/*.md` plans call this out as the next safety layer. **Do not run
-  destructive real-account flows until reconciliation + live validation are
-  complete.**
+- **Real-Gmail local reconciliation is implemented; live validation is
+  pending.** `clean`, `undo`, and `purge` mutate Gmail and SQLite/undo-cache
+  as separate operations with no transaction spanning both. The InTrash
+  reconcile layer (merged in #21) closes most of the drift: after a partial
+  mutation each command asks Gmail what actually moved, trims the undo cache
+  and SQLite mark to match (`storage.ReplaceOrRemoveUndoCache`), treats a
+  Gmail 404 as "permanently deleted, not restorable" (the partial-purge /
+  stale-cache case), and never re-inserts ghosts. Covered by partial-failure
+  tests (`internal/cli/cli_test.go`, `internal/gmailclient/real_test.go`).
+  What remains is **live-account validation** (TC-01…TC-10 in
+  `.planning/live-account-mutation-test-plan.md`). **Do not run destructive
+  real-account flows until that live validation is complete.**
 - **`IsContact` is never set on the real path** — `mapGmailMessage` hard-codes
   `IsContact: false` (`internal/gmailclient/real.go`). The planner's
   contacts keep-rule is a no-op against real data; only fixture data
@@ -84,9 +89,6 @@
   `.plans/implement-notes.md` suggests lifting shared helpers into a
   `internal/util/` package when a second consumer appears. (`humanBytes`
   and `truncate` were consolidated into `internal/format`.)
-- **`internal/engine/pipeline.go` duplicates the StoredMessage construction**
-  between `fetchAndClassify` and `applyTrash` (two near-identical
-  `StoredMessage{...}` literals).
 - **`models.StatsReport`/aggregations live partly in storage and partly in
   models** — the `Aggregations` consolidation (stats.go) addressed
   duplicate table scans, but the report type straddles `models` and
@@ -118,8 +120,9 @@
 
 ## Roadmap items (from README)
 
-- Reconcile local SQLite + undo-cache after partial/interrupted real Gmail
-  mutations (the top safety item).
+- ~~Reconcile local SQLite + undo-cache after partial/interrupted real Gmail
+  mutations~~ — **done (#21)** via the InTrash reconcile layer. Remaining:
+  live-account validation (TC-01…TC-10).
 - People-API `IsContact` enrichment on scan.
 - Per-message rate-limited batcher for `clean`.
 - `gclean rules` editor; `gclean report` analytics export.
