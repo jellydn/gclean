@@ -4,7 +4,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
-	"path/filepath"
 	"strings"
 	"time"
 )
@@ -78,44 +77,11 @@ func normalizeSenders(senders []string) []string {
 }
 
 func writeAtomic(path string, data []byte, mode os.FileMode) error {
-	dir := filepath.Dir(path)
-	if err := os.MkdirAll(dir, 0o755); err != nil {
-		return err
-	}
 	if info, err := os.Stat(path); err == nil && info.Size() == 0 {
 		// A zero-byte cache is safe to replace; non-empty recovery files are
 		// protected by their callers before reaching this helper.
 	} else if err != nil && !os.IsNotExist(err) {
 		return err
 	}
-	tmp, err := os.CreateTemp(dir, ".gclean-atomic-*")
-	if err != nil {
-		return err
-	}
-	tmpPath := tmp.Name()
-	defer func() {
-		_ = tmp.Close()
-		_ = os.Remove(tmpPath)
-	}()
-	if err := tmp.Chmod(mode); err != nil {
-		return err
-	}
-	if _, err := tmp.Write(data); err != nil {
-		return err
-	}
-	if err := tmp.Sync(); err != nil {
-		return err
-	}
-	if err := tmp.Close(); err != nil {
-		return err
-	}
-	if err := os.Rename(tmpPath, path); err != nil {
-		return err
-	}
-	dirFile, err := os.Open(dir)
-	if err != nil {
-		return err
-	}
-	defer func() { _ = dirFile.Close() }()
-	return dirFile.Sync()
+	return writeFileAtomic(path, data, mode, ".gclean-atomic-*")
 }
