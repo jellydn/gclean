@@ -65,6 +65,55 @@ func TestSaveUndoCache_DoesNotOverwriteExistingBatch(t *testing.T) {
 	}
 }
 
+func TestReplaceOrRemoveUndoCache_ReplacesWhenNonEmpty(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "undo-cache.json")
+	if err := SaveUndoCache(path, []StoredMessage{{ID: "m1"}}); err != nil {
+		t.Fatalf("SaveUndoCache: %v", err)
+	}
+	// Replace branch: non-empty records overwrite the existing cache.
+	if err := ReplaceOrRemoveUndoCache(path, []StoredMessage{{ID: "m2"}}); err != nil {
+		t.Fatalf("ReplaceOrRemoveUndoCache: %v", err)
+	}
+	got, err := LoadUndoCache(path)
+	if err != nil {
+		t.Fatalf("LoadUndoCache: %v", err)
+	}
+	if len(got) != 1 || got[0].ID != "m2" {
+		t.Fatalf("cache after replace = %#v, want m2", got)
+	}
+}
+
+func TestReplaceOrRemoveUndoCache_RemovesWhenEmpty(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "undo-cache.json")
+	if err := SaveUndoCache(path, []StoredMessage{{ID: "m1"}}); err != nil {
+		t.Fatalf("SaveUndoCache: %v", err)
+	}
+	// Remove branch: empty records delete the file entirely rather than
+	// writing an empty-records cache that would block a retried clean.
+	if err := ReplaceOrRemoveUndoCache(path, nil); err != nil {
+		t.Fatalf("ReplaceOrRemoveUndoCache(nil): %v", err)
+	}
+	if _, err := os.Stat(path); !os.IsNotExist(err) {
+		t.Fatalf("cache file should be removed, stat err = %v", err)
+	}
+	// A removed cache loads as "nothing to undo" (missing file is not an error).
+	got, err := LoadUndoCache(path)
+	if err != nil {
+		t.Fatalf("LoadUndoCache after remove: %v", err)
+	}
+	if len(got) != 0 {
+		t.Fatalf("cache after remove = %#v, want empty", got)
+	}
+}
+
+func TestReplaceOrRemoveUndoCache_RemoveIsIdempotent(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "undo-cache.json")
+	// No file exists yet; removing an absent cache must not error.
+	if err := ReplaceOrRemoveUndoCache(path, nil); err != nil {
+		t.Fatalf("ReplaceOrRemoveUndoCache(nil) on absent file: %v", err)
+	}
+}
+
 func TestLoadUndoCache_RejectsTampering(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "undo-cache.json")
 	if err := SaveUndoCache(path, []StoredMessage{{ID: "m1"}}); err != nil {
