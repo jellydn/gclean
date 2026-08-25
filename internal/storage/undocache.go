@@ -7,7 +7,6 @@ import (
 	"errors"
 	"fmt"
 	"os"
-	"path/filepath"
 )
 
 // UndoCache persists pre-trash message records so `gclean undo` can restore
@@ -66,10 +65,6 @@ func ReplaceOrRemoveUndoCache(path string, recs []StoredMessage) error {
 }
 
 func writeUndoCache(path string, recs []StoredMessage, overwrite bool) error {
-	dir := filepath.Dir(path)
-	if err := os.MkdirAll(dir, 0o755); err != nil {
-		return err
-	}
 	if !overwrite {
 		if info, err := os.Stat(path); err == nil {
 			if info.Size() > 0 {
@@ -88,41 +83,7 @@ func writeUndoCache(path string, recs []StoredMessage, overwrite bool) error {
 	if err != nil {
 		return err
 	}
-
-	tmp, err := os.CreateTemp(dir, ".undo-cache-*")
-	if err != nil {
-		return err
-	}
-	tmpPath := tmp.Name()
-	defer func() {
-		_ = tmp.Close()
-		_ = os.Remove(tmpPath)
-	}()
-	if err := tmp.Chmod(0o600); err != nil {
-		return err
-	}
-	if _, err := tmp.Write(b); err != nil {
-		return err
-	}
-	if err := tmp.Sync(); err != nil {
-		return err
-	}
-	if err := tmp.Close(); err != nil {
-		return err
-	}
-	if err := os.Rename(tmpPath, path); err != nil {
-		return err
-	}
-	return syncDirectory(dir)
-}
-
-func syncDirectory(path string) error {
-	dir, err := os.Open(path)
-	if err != nil {
-		return err
-	}
-	defer func() { _ = dir.Close() }()
-	return dir.Sync()
+	return writeFileAtomic(path, b, 0o600, ".undo-cache-*")
 }
 
 // LoadUndoCache reads pre-trash records, verifying the integrity tag. A
