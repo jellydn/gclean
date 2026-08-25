@@ -249,6 +249,35 @@ func TestRealClient_InTrash_ExcludesNonTrashed(t *testing.T) {
 	}
 }
 
+func TestRealClient_InTrash_404IsNotInTrash(t *testing.T) {
+	stubRetryDelay(t, func(int, error) time.Duration { return 0 })
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet || !strings.HasPrefix(r.URL.Path, "/gmail/v1/users/me/messages/") {
+			http.Error(w, "unexpected request: "+r.Method+" "+r.URL.Path, http.StatusNotFound)
+			return
+		}
+		switch path.Base(r.URL.Path) {
+		case "gone":
+			// Permanently deleted by a partial purge/batchDelete: Gmail 404s.
+			http.Error(w, "deleted", http.StatusNotFound)
+		case "trashed":
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = fmt.Fprint(w, `{"id":"trashed","labelIds":["INBOX","TRASH"]}`)
+		default:
+			http.Error(w, "unexpected id: "+path.Base(r.URL.Path), http.StatusNotFound)
+		}
+	}))
+	defer server.Close()
+
+	in, err := newHTTPTestClient(t, server).InTrash([]string{"gone", "trashed"})
+	if err != nil {
+		t.Fatalf("InTrash: %v (404 must mean not-in-Trash, not abort the reconcile)", err)
+	}
+	if len(in) != 1 || in[0] != "trashed" {
+		t.Fatalf("InTrash = %v, want [trashed]", in)
+	}
+}
+
 func TestRealClient_EmptyTrash_FallsBackToIndividualDeleteOn403(t *testing.T) {
 	stubRetryDelay(t, func(int, error) time.Duration { return 0 })
 	var (

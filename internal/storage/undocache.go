@@ -50,6 +50,21 @@ func ReplaceUndoCache(path string, recs []StoredMessage) error {
 	return writeUndoCache(path, recs, true)
 }
 
+// ReplaceOrRemoveUndoCache rewrites the cache to the given records, or
+// removes the file entirely when no records remain. An empty-records cache
+// file would block a retried `clean` (SaveUndoCache refuses to overwrite a
+// non-empty file), so after a reconcile that leaves nothing in Trash the
+// correct end state is "no cache at all", not "a cache with zero records".
+func ReplaceOrRemoveUndoCache(path string, recs []StoredMessage) error {
+	if len(recs) == 0 {
+		if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
+			return err
+		}
+		return nil
+	}
+	return ReplaceUndoCache(path, recs)
+}
+
 func writeUndoCache(path string, recs []StoredMessage, overwrite bool) error {
 	dir := filepath.Dir(path)
 	if err := os.MkdirAll(dir, 0o755); err != nil {

@@ -812,3 +812,86 @@ func TestPurge_PartialEmptyReconciles(t *testing.T) {
 		t.Fatalf("cache remaining = %+v, want only m2", left)
 	}
 }
+
+// TestClean_NoMessagesMovedRemovesCache pins the zero-moved reconcile: when
+// Gmail moves none of the cohort, the pre-trash cache must be removed (not
+// rewritten to an empty-records file) so a retried `clean --yes` is not
+// blocked by SaveUndoCache's refuse-to-overwrite guard.
+func TestClean_NoMessagesMovedRemovesCache(t *testing.T) {
+	tmp := t.TempDir()
+	dbPath := filepath.Join(tmp, "gclean.db")
+	cachePath := filepath.Join(tmp, "undo-cache.json")
+	t.Setenv("GCLEAN_DB_PATH", dbPath)
+	t.Setenv("GCLEAN_UNDO_CACHE", cachePath)
+	t.Setenv("GCLEAN_SELECTION_PATH", filepath.Join(tmp, "selection.json"))
+
+	seedJunkStore(t, dbPath, "m1", "m2")
+
+	client := newPartialClient()
+	client.failTrashAfter = 0 // no message reaches Trash
+
+	store, err := storage.Open(dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = store.Close() }()
+
+	p, err := buildPipeline(store, client, junkDeleteDoc(), &bytes.Buffer{}, &bytes.Buffer{}, cachePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := p.Run(p.PlanStages()...); err != nil {
+		t.Fatal(err)
+	}
+	err = p.Run(p.ApplyStages()...)
+	if err == nil || !strings.Contains(err.Error(), "no messages moved") {
+		t.Fatalf("want no-messages-moved error, got %v", err)
+	}
+
+	// The stale pre-trash cache must be gone, not rewritten to zero records.
+	if _, statErr := os.Stat(cachePath); !os.IsNotExist(statErr) {
+		t.Fatalf("cache file should be removed, stat err = %v", statErr)
+	}
+	// Nothing was trashed, so both messages remain in the store.
+	remaining, err := store.AllClassified()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(remaining) != 2 {
+		t.Fatalf("store remaining = %+v, want both m1 and m2", remaining)
+	}
+}
+
+// TestPurge_AllRecordsPurgedRemovesCache pins the fully-purged reconcile:
+// when InTrash finds nothing left (the gclean cohort was deleted before the
+// failing EmptyTrash page), the stale cache must be removed so undo cannot
+// point at permanently deleted IDs.
+func TestPurge_AllRecordsPurgedRemovesCache(t *testing.T) {
+	tmp := t.TempDir()
+	cachePath := filepath.Join(tmp, "undo-cache.json")
+
+	records := []storage.StoredMessage{
+		{ID: "m1", SenderEmail: defang.MkEmail("x", "example.com"), Subject: "m1", Date: "2020-01-01T00:00:00Z", Size: 1000, IsJunk: true, JunkReason: models.ReasonNewsletter, Verdict: int(models.VerdictDelete)},
+		{ID: "m2", SenderEmail: defang.MkEmail("x", "example.com"), Subject: "m2", Date: "2020-01-01T00:00:00Z", Size: 1000, IsJunk: true, JunkReason: models.ReasonNewsletter, Verdict: int(models.VerdictDelete)},
+	}
+	if err := storage.SaveUndoCache(cachePath, records); err != nil {
+		t.Fatal(err)
+	}
+
+	client := newPartialClient()
+	client.trashed["m1"] = true
+	client.trashed["m2"] = true
+	client.failEmpty = true
+	client.failEmptyKeep = map[string]bool{} // everything purged, but EmptyTrash failed on a later page
+
+	err := purgeWithReconcile(client, records, cachePath)
+	if err == nil {
+		t.Fatalf("want purge error, got nil")
+	}
+
+	// The cohort is fully gone from Trash; the stale cache must not survive
+	// pointing at deleted IDs.
+	if _, statErr := os.Stat(cachePath); !os.IsNotExist(statErr) {
+		t.Fatalf("cache file should be removed, stat err = %v", statErr)
+	}
+}
