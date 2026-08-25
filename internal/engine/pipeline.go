@@ -156,12 +156,9 @@ func (p *Pipeline) applyTrash(pl *Pipeline) error {
 		// to Trash server-side, trim the undo cache and the local mark to
 		// match, then fail loudly so the user knows the operation was
 		// partial. Without this, Gmail state and local state silently drift.
-		trashed, inErr := pl.Client.InTrash(ids)
-		if inErr != nil {
-			return fmt.Errorf("trash: %w (reconcile failed: %v)", trashErr, inErr)
-		}
-		if err := reconcileTrash(pl, toTrash, trashed); err != nil {
-			return fmt.Errorf("trash: %w (reconcile: %v)", trashErr, err)
+		trashed, rerr := reconcileTrashFailure(pl, toTrash, ids, "trash", trashErr)
+		if rerr != nil {
+			return rerr
 		}
 		switch {
 		case len(trashed) == 0:
@@ -176,12 +173,8 @@ func (p *Pipeline) applyTrash(pl *Pipeline) error {
 		// Gmail moved the cohort but the local mark failed; reconcile against
 		// Gmail's actual state so the store rows and undo cache don't drift
 		// (retry would otherwise die on the existing undo cache).
-		trashed, inErr := pl.Client.InTrash(ids)
-		if inErr != nil {
-			return fmt.Errorf("mark trashed: %w (reconcile failed: %v)", err, inErr)
-		}
-		if rerr := reconcileTrash(pl, toTrash, trashed); rerr != nil {
-			return fmt.Errorf("mark trashed: %w (reconcile: %v)", err, rerr)
+		if _, rerr := reconcileTrashFailure(pl, toTrash, ids, "mark trashed", err); rerr != nil {
+			return rerr
 		}
 		return fmt.Errorf("mark trashed: %w", err)
 	}
@@ -190,20 +183,26 @@ func (p *Pipeline) applyTrash(pl *Pipeline) error {
 	return nil
 }
 
+// reconcileTrashFailure reconciles a failed trash against Gmail's actual
+// state: it asks which ids reached Trash, trims the undo cache and the local
+// mark to match, and wraps the original failure with a named prefix. It
+// returns the ids actually in Trash so the caller can report partial progress.
+func reconcileTrashFailure(pl *Pipeline, toTrash []storage.StoredMessage, ids []string, prefix string, cause error) ([]string, error) {
+	trashed, inErr := pl.Client.InTrash(ids)
+	if inErr != nil {
+		return nil, fmt.Errorf("%s: %w (reconcile failed: %v)", prefix, cause, inErr)
+	}
+	if err := reconcileTrash(pl, toTrash, trashed); err != nil {
+		return nil, fmt.Errorf("%s: %w (reconcile: %v)", prefix, cause, err)
+	}
+	return trashed, nil
+}
+
 // reconcileTrash trims the undo cache and the local mark so they reflect only
 // the messages that actually reached Gmail's Trash after a partial failure.
 // It fails loudly if the cache cannot be rewritten.
 func reconcileTrash(pl *Pipeline, records []storage.StoredMessage, trashed []string) error {
-	kept := make([]storage.StoredMessage, 0, len(trashed))
-	inTrash := make(map[string]struct{}, len(trashed))
-	for _, id := range trashed {
-		inTrash[id] = struct{}{}
-	}
-	for _, r := range records {
-		if _, ok := inTrash[r.ID]; ok {
-			kept = append(kept, r)
-		}
-	}
+	kept := storage.FilterRecords(records, trashed)
 	if pl.CachePath != "" {
 		if err := storage.ReplaceOrRemoveUndoCache(pl.CachePath, kept); err != nil {
 			return err

@@ -301,10 +301,11 @@ func newUndoCmd(out, errOut io.Writer) *cobra.Command {
 				return err
 			}
 			defer func() { _ = store.Close() }()
-			if err := undoWithReconcile(client, store, records, cache); err != nil {
+			restored, err := undoWithReconcile(client, store, records, cache)
+			if err != nil {
 				return err
 			}
-			_, _ = fmt.Fprintf(out, "Restored %d messages from Trash.\n", len(records))
+			_, _ = fmt.Fprintf(out, "Restored %d messages from Trash.\n", restored)
 			_ = os.Remove(cache)
 			return nil
 		},
@@ -320,8 +321,9 @@ func newUndoCmd(out, errOut io.Writer) *cobra.Command {
 // the ids it actually untrashed (404s — permanently deleted messages, e.g.
 // the aftermath of a partial purge — are skipped, not errors), so only those
 // are re-inserted; the cache is trimmed to what is still in Trash (or removed
-// entirely) so `gclean undo` can be retried and can never point at ghosts.
-func undoWithReconcile(client gmailclient.Client, store *storage.Store, records []storage.StoredMessage, cachePath string) error {
+// entirely) so `gclean undo` can be retried and can never point at ghosts. It
+// returns the number of messages actually restored.
+func undoWithReconcile(client gmailclient.Client, store *storage.Store, records []storage.StoredMessage, cachePath string) (int, error) {
 	ids := recordIDs(records)
 	restored, restoreErr := client.RestoreFromTrash(ids)
 	if restoreErr != nil {
@@ -331,39 +333,39 @@ func undoWithReconcile(client gmailclient.Client, store *storage.Store, records 
 		// deleted) without re-inserting them.
 		still, inErr := client.InTrash(ids)
 		if inErr != nil {
-			return fmt.Errorf("restore: %w (reconcile failed: %v)", restoreErr, inErr)
+			return 0, fmt.Errorf("restore: %w (reconcile failed: %v)", restoreErr, inErr)
 		}
-		if err := store.RestoreTrashed(filterRecords(records, restored)); err != nil {
-			return fmt.Errorf("restore: %w (reconcile re-insert failed: %v)", restoreErr, err)
+		if err := store.RestoreTrashed(storage.FilterRecords(records, restored)); err != nil {
+			return 0, fmt.Errorf("restore: %w (reconcile re-insert failed: %v)", restoreErr, err)
 		}
-		if err := storage.ReplaceOrRemoveUndoCache(cachePath, filterRecords(records, still)); err != nil {
-			return fmt.Errorf("restore: %w (reconcile cache rewrite failed: %v)", restoreErr, err)
+		if err := storage.ReplaceOrRemoveUndoCache(cachePath, storage.FilterRecords(records, still)); err != nil {
+			return 0, fmt.Errorf("restore: %w (reconcile cache rewrite failed: %v)", restoreErr, err)
 		}
 		if len(restored) == 0 {
-			return fmt.Errorf("restore: no messages restored: %w", restoreErr)
+			return 0, fmt.Errorf("restore: no messages restored: %w", restoreErr)
 		}
-		return fmt.Errorf("restore partially applied: %d of %d messages restored: %w", len(restored), len(ids), restoreErr)
+		return 0, fmt.Errorf("restore partially applied: %d of %d messages restored: %w", len(restored), len(ids), restoreErr)
 	}
 	// RestoreFromTrash succeeded: every id was either untrashed or 404
 	// (permanently deleted). Re-insert exactly the restored ones.
-	if err := store.RestoreTrashed(filterRecords(records, restored)); err != nil {
+	if err := store.RestoreTrashed(storage.FilterRecords(records, restored)); err != nil {
 		// Gmail moved the messages but the local re-insert failed; reconcile
 		// the cache against what Gmail still reports in Trash.
 		still, inErr := client.InTrash(ids)
 		if inErr != nil {
-			return fmt.Errorf("restore: %w (reconcile failed: %v)", err, inErr)
+			return 0, fmt.Errorf("restore: %w (reconcile failed: %v)", err, inErr)
 		}
-		if rerr := storage.ReplaceOrRemoveUndoCache(cachePath, filterRecords(records, still)); rerr != nil {
-			return fmt.Errorf("restore: %w (reconcile: %v)", err, rerr)
+		if rerr := storage.ReplaceOrRemoveUndoCache(cachePath, storage.FilterRecords(records, still)); rerr != nil {
+			return 0, fmt.Errorf("restore: %w (reconcile: %v)", err, rerr)
 		}
-		return fmt.Errorf("restore: %w", err)
+		return 0, fmt.Errorf("restore: %w", err)
 	}
 	// Nothing remains in Trash; a cache file with zero records would block a
 	// retried clean, so remove it rather than write an empty one.
 	if err := storage.ReplaceOrRemoveUndoCache(cachePath, nil); err != nil {
-		return fmt.Errorf("restore: remove undo cache: %w", err)
+		return 0, fmt.Errorf("restore: remove undo cache: %w", err)
 	}
-	return nil
+	return len(restored), nil
 }
 
 // purgeWithReconcile empties Trash, keeping (and trimming) the undo cache to
@@ -380,7 +382,7 @@ func purgeWithReconcile(client gmailclient.Client, records []storage.StoredMessa
 				return fmt.Errorf("purge: %w (reconcile failed: %v)", err, inErr)
 			}
 			if len(still) > 0 {
-				if err2 := storage.ReplaceUndoCache(cachePath, filterRecords(records, still)); err2 != nil {
+				if err2 := storage.ReplaceUndoCache(cachePath, storage.FilterRecords(records, still)); err2 != nil {
 					return fmt.Errorf("purge: %w (reconcile cache rewrite failed: %v)", err, err2)
 				}
 				return fmt.Errorf("purge partially applied: %d messages remain in Trash: %w", len(still), err)
@@ -402,22 +404,6 @@ func recordIDs(records []storage.StoredMessage) []string {
 	}
 	return ids
 }
-
-// filterRecords returns the records whose ID is in ids, preserving order.
-func filterRecords(records []storage.StoredMessage, ids []string) []storage.StoredMessage {
-	keep := make(map[string]struct{}, len(ids))
-	for _, id := range ids {
-		keep[id] = struct{}{}
-	}
-	out := make([]storage.StoredMessage, 0, len(ids))
-	for _, r := range records {
-		if _, ok := keep[r.ID]; ok {
-			out = append(out, r)
-		}
-	}
-	return out
-}
-
 
 func selectionPath() string {
 	if p := os.Getenv("GCLEAN_SELECTION_PATH"); p != "" {

@@ -771,7 +771,7 @@ func TestUndo_PartialRestoreReconciles(t *testing.T) {
 	client.trashed["m2"] = true
 	client.failRestore = 1 // restores the first id, then fails
 
-	err = undoWithReconcile(client, store, records, cachePath)
+	_, err = undoWithReconcile(client, store, records, cachePath)
 	if err == nil || !strings.Contains(err.Error(), "partially applied") {
 		t.Fatalf("want partial-restore error, got %v", err)
 	}
@@ -825,7 +825,7 @@ func TestUndo_AfterPartialPurgeSkipsDeletedRestoresSurvivors(t *testing.T) {
 	client.trashed["m2"] = true
 	client.deleted["m1"] = true
 
-	if err := undoWithReconcile(client, store, records, cachePath); err != nil {
+	if _, err := undoWithReconcile(client, store, records, cachePath); err != nil {
 		t.Fatalf("undo after partial purge: %v", err)
 	}
 
