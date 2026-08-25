@@ -41,30 +41,34 @@ type Reconciler struct {
 
 // ReconcileTrash trims the undo cache and the local mark so they reflect only
 // the messages that actually reached Gmail's Trash after a partial failure.
-// It fails loudly if the cache cannot be rewritten.
-func (r *Reconciler) ReconcileTrash(records []storage.StoredMessage, trashed []string) error {
+// It fails loudly if the cache cannot be rewritten, and returns the kept
+// records so the caller can render exactly what survived without recomputing
+// the subset.
+func (r *Reconciler) ReconcileTrash(records []storage.StoredMessage, trashed []string) ([]storage.StoredMessage, error) {
 	kept := storage.FilterRecords(records, trashed)
 	if r.CachePath != "" {
 		if err := storage.ReplaceOrRemoveUndoCache(r.CachePath, kept); err != nil {
-			return err
+			return nil, err
 		}
 	}
-	return r.Store.MarkTrashed(trashed)
+	return kept, r.Store.MarkTrashed(trashed)
 }
 
 // ReconcileTrashFailure reconciles a failed trash against Gmail's actual
 // state: it asks which ids reached Trash, trims the undo cache and the local
 // mark to match, and wraps the original failure with a named prefix. It
-// returns the ids actually in Trash so the caller can report partial progress.
-func (r *Reconciler) ReconcileTrashFailure(gmail ReadBack, records []storage.StoredMessage, ids []string, prefix string, cause error) ([]string, error) {
+// returns the ids actually in Trash and their records so the caller can
+// report partial progress.
+func (r *Reconciler) ReconcileTrashFailure(gmail ReadBack, records []storage.StoredMessage, ids []string, prefix string, cause error) ([]string, []storage.StoredMessage, error) {
 	trashed, inErr := gmail.InTrash(ids)
 	if inErr != nil {
-		return nil, fmt.Errorf("%s: %w (reconcile failed: %v)", prefix, cause, inErr)
+		return nil, nil, fmt.Errorf("%s: %w (reconcile failed: %v)", prefix, cause, inErr)
 	}
-	if err := r.ReconcileTrash(records, trashed); err != nil {
-		return nil, fmt.Errorf("%s: %w (reconcile: %v)", prefix, cause, err)
+	kept, err := r.ReconcileTrash(records, trashed)
+	if err != nil {
+		return nil, nil, fmt.Errorf("%s: %w (reconcile: %v)", prefix, cause, err)
 	}
-	return trashed, nil
+	return trashed, kept, nil
 }
 
 // Undo restores records from Trash, reconciling so the local store and undo

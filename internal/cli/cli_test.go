@@ -576,7 +576,7 @@ func TestDevCommand_OneShotMode_RendersPipeline(t *testing.T) {
 // These simulate a Gmail backend that fails a mutation partway and reports
 // the actual server-side state via InTrash, so the reconcile paths in clean /
 // undo / purge can be tested without network. The failure-injection knobs
-// (FailTrashAfter / FailRestore / FailEmpty / FailEmptyKeep / Delete) live on
+// (FailTrash / FailRestore / FailEmpty / FailEmptyKeep / Delete) live on
 // gmailclient.FakeClient — there is no bespoke test double here.
 // --------------------------------------------------------------------------
 
@@ -623,6 +623,7 @@ func TestClean_PartialTrashReconcilesCacheAndStore(t *testing.T) {
 	seedJunkStore(t, dbPath, "m1", "m2")
 
 	client := gmailclient.NewFakeClientFromMessages(nil)
+	client.FailTrash = true
 	client.FailTrashAfter = 1 // only the first message reaches Trash
 
 	store, err := storage.Open(dbPath)
@@ -684,7 +685,8 @@ func TestUndo_PartialRestoreReconciles(t *testing.T) {
 	if err := client.TrashMessages([]string{"m1", "m2"}); err != nil {
 		t.Fatal(err)
 	}
-	client.FailRestore = 1 // restores the first id, then fails
+	client.FailRestore = true
+	client.FailRestoreAfter = 1 // restores the first id, then fails
 
 	rc := engine.Reconciler{Store: store, CachePath: cachePath}
 	_, err = rc.Undo(client, records)
@@ -812,6 +814,7 @@ func TestClean_NoMessagesMovedRemovesCache(t *testing.T) {
 	seedJunkStore(t, dbPath, "m1", "m2")
 
 	client := gmailclient.NewFakeClientFromMessages(nil)
+	client.FailTrash = true
 	client.FailTrashAfter = 0 // no message reaches Trash
 
 	store, err := storage.Open(dbPath)
