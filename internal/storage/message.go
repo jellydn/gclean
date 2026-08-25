@@ -39,3 +39,20 @@ func encodeHeaders(h map[string]string) string {
 	b, _ := json.Marshal(h)
 	return string(b)
 }
+
+// FilterRecords returns the records whose ID is in ids, preserving order.
+// It is the shared subset operation the reconcile paths use to trim undo
+// records to the messages Gmail actually mutated.
+func FilterRecords(records []StoredMessage, ids []string) []StoredMessage {
+	keep := make(map[string]struct{}, len(ids))
+	for _, id := range ids {
+		keep[id] = struct{}{}
+	}
+	out := make([]StoredMessage, 0, len(ids))
+	for _, r := range records {
+		if _, ok := keep[r.ID]; ok {
+			out = append(out, r)
+		}
+	}
+	return out
+}
