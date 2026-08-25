@@ -26,9 +26,11 @@ type Client interface {
 	// reverse. We require explicit confirmation at the CLI layer.
 	EmptyTrash() error
 
-	// RestoreFromTrash undoes a TrashMessages call where possible
-	// (within Gmail's 30-day window). Best-effort.
-	RestoreFromTrash(ids []string) error
+	// RestoreFromTrash untrashes the given IDs and returns the subset that
+	// was actually restored. A message that no longer exists (permanently
+	// deleted, e.g. by a partial purge) is skipped rather than aborting the
+	// batch; the caller uses the returned set to avoid re-inserting ghosts.
+	RestoreFromTrash(ids []string) ([]string, error)
 
 	// InTrash returns the subset of ids currently in Gmail's Trash. It is
 	// the source of truth for reconciling local state after a partial

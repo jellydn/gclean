@@ -15,7 +15,7 @@ overall pipeline; this plan drills into the mutation path only.
 | Operation | CLI path | Adapter behavior (`internal/gmailclient/real.go`) |
 | --------- | -------- | ------------------------------------------------- |
 | `clean --yes` | `newCleanCmd` → `engine.Pipeline.ApplyStages` | **Order**: write undo cache atomically (fatal on error, refuses to overwrite a non-empty cache) → `TrashMessages` → `MarkTrashed` (SQLite). `TrashMessages` calls `Users.Messages.Trash` per ID, sequentially, with retry. |
-| `undo` | `newUndoCmd` | Load undo cache → `RestoreFromTrash` (per-ID `Users.Messages.Untrash`, retried) → `RestoreTrashed` (SQLite) → delete cache file. Prints `Restored N messages from Trash.` |
+| `undo` | `newUndoCmd` | Load undo cache → `RestoreFromTrash` (per-ID `Users.Messages.Untrash`, retried; returns the actually-restored subset, **404 = permanently deleted → skipped**, not an error) → re-insert only the restored subset via `RestoreTrashed` (SQLite) → remove cache file. Prints `Restored N messages from Trash.` |
 | `purge --yes` | `newPurgeCmd` | `EmptyTrash`: paginate `LabelIds("TRASH")` at 1,000/page, then `Messages.BatchDelete` in chunks of 1,000, each retried. Afterwards the CLI deletes the undo cache. |
 
 **Retry policy** (`retryMutation`): up to `maxMutationAttempts = 3` attempts per call.
@@ -162,6 +162,38 @@ worth a manual negative test: craft the cohort to include a nonexistent ID (see 
    redirect uses its own port, both tokens persist to `GCLEAN_TOKEN_PATH`. A fixed-port
    regression would surface as `address already in use`.
 
+### TC-10 — Undo after a real partial purge (stale-cache recovery) ⚠️ safety check
+
+**Why**: the most dangerous reconcile case. A partial/interrupted `purge` permanently
+   deletes some cohort messages while leaving others in Trash, and the undo cache may
+   still reference the deleted IDs. `gclean undo` must recover the survivors, skip the
+   permanently-deleted IDs without aborting (404 = not restorable), and **never
+   re-insert ghosts** into the local store. Regression counterpart of
+   `TestUndo_AfterPartialPurgeSkipsDeletedRestoresSurvivors` and
+   `TestRealClient_RestoreFromTrash_404SkipsDeleted`.
+
+1. Seed ≥ 2 `[gclean-test] T10` marketing messages; `gclean scan && gclean dry-run`
+   lists them all.
+2. `gclean clean --yes` → all N in Trash; `cat $GCLEAN_UNDO_CACHE` shows N records.
+3. Reproduce the partial-purge server state deterministically: permanently delete a
+   subset K (e.g. the first one) out-of-band via the Gmail API
+   (`gmail.users.messages.delete`) or Gmail UI "Delete forever". The K messages are
+   now 404s — exactly what a partial `EmptyTrash` leaves behind. The remaining N−K
+   stay in Trash.
+   - Optional, if you can provoke a real mid-purge failure (e.g. quota 429 on a large
+     Trash): run `gclean purge --yes` and let it fail partway; otherwise the
+     out-of-band deletes above are the state to reconcile.
+4. `gclean undo`
+5. **Expect**:
+   - exit 0; `Restored N−K messages from Trash.`
+   - Gmail-side: `subject:[gclean-test] T10 in:anywhere` returns the N−K survivors
+     (back in Inbox); the K deleted IDs return nothing (permanent).
+   - Local store: `select id from messages where subject like '[gclean-test]%'`
+     returns **exactly** the N−K survivors — **no ghost rows** for the deleted K.
+   - Undo cache file removed.
+6. **Negative assertion**: undo must not abort with a 404; the deleted IDs must never
+   appear in the local store.
+
 ## Verification tooling
 
 - **Gmail-side**: `label:trash`, `in:anywhere`, `subject:` searches; compare message IDs
@@ -184,7 +216,9 @@ worth a manual negative test: craft the cohort to include a nonexistent ID (see 
 ## Exit criteria
 
 - [ ] G1–G5 safety gates pass with no Gmail-side side effects on failure paths
-- [ ] TC-01…TC-09 pass on a live account; IDs verified on the Gmail side
+- [ ] TC-01…TC-10 pass on a live account; IDs verified on the Gmail side
+- [ ] TC-10: after out-of-band permanent deletion, `undo` restores only the survivors
+      (no ghost rows, no 404 abort, cache removed)
 - [ ] `label:trash` count after TC-07 = 0 (batching + pagination correct)
 - [ ] Undo cache lifecycle verified: created atomically before mutation, non-empty
       blocks re-clean, removed by `undo` and `purge`

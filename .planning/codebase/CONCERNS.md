@@ -21,10 +21,13 @@
 - **Read path has no retry** — `ListMessages` (`internal/gmailclient/real.go`)
   does a single attempt per page; a 429/5xx aborts the whole scan. Mutation
   paths retry, reads don't. Noted in `.planning/live-account-mutation-test-plan.md`.
-- **`undo` failure semantics are unverified live** — `RestoreFromTrash`
-  aborts the whole batch on the first per-message error; whether Gmail
-  rejects an untrash for a message not in Trash is unspecified. TC-05 in the
-  live plan flags this as needing a finding/decision (warn vs. hard error).
+- **`undo` failure semantics are partially verified** — `RestoreFromTrash`
+  now treats a 404 (permanently deleted, e.g. after a partial purge) as
+  "skip, not restorable" and returns the actually-restored subset, so a
+  stale undo cache can't abort the batch or re-insert ghosts. Still
+  unverified live: whether Gmail's `untrash` accepts (200, idempotent) or
+  rejects a message that exists but isn't in Trash — TC-05 and TC-10 in the
+  live plan cover both.
 
 ## Email-obfuscation landmine (recurring)
 

@@ -583,14 +583,17 @@ func TestDevCommand_OneShotMode_RendersPipeline(t *testing.T) {
 //
 //   - failTrashAfter >= 0: TrashMessages trashes only the first N ids then
 //     errors (-1 disables).
-//   - failRestoreAfter >= 0: RestoreFromTrash restores only the ids before
-//     that index then errors.
+//   - failRestore >= 0: RestoreFromTrash restores only the ids before that
+//     index then errors.
 //   - failEmpty: EmptyTrash permanently deletes every id NOT in
-//     failEmptyKeep, then errors (simulating a partial purge).
+//     failEmptyKeep, then errors (simulating a partial purge); deleted ids
+//     move into the `deleted` set, which RestoreFromTrash/InTrash treat as
+//     404s (gone forever, not restorable).
 //
 // InTrash always reflects the simulated server-side state.
 type partialClient struct {
 	trashed        map[string]bool
+	deleted        map[string]bool
 	failTrashAfter int
 	failRestore    int
 	failEmpty      bool
@@ -598,7 +601,7 @@ type partialClient struct {
 }
 
 func newPartialClient() *partialClient {
-	return &partialClient{trashed: map[string]bool{}, failTrashAfter: -1, failRestore: -1}
+	return &partialClient{trashed: map[string]bool{}, deleted: map[string]bool{}, failTrashAfter: -1, failRestore: -1}
 }
 
 func (c *partialClient) ListMessages(string, int) ([]*models.Message, error) { return nil, nil }
@@ -621,25 +624,36 @@ func (c *partialClient) EmptyTrash() error {
 		for id := range c.trashed {
 			if !c.failEmptyKeep[id] {
 				delete(c.trashed, id)
+				c.deleted[id] = true
 			}
 		}
 		return errors.New("simulated empty-trash failure")
 	}
 	c.trashed = map[string]bool{}
+	c.deleted = map[string]bool{}
 	return nil
 }
 
-func (c *partialClient) RestoreFromTrash(ids []string) error {
+func (c *partialClient) RestoreFromTrash(ids []string) ([]string, error) {
+	restored := []string{}
 	if c.failRestore >= 0 {
 		for _, id := range ids[:min(c.failRestore, len(ids))] {
+			if c.deleted[id] {
+				continue // permanently deleted: skip like a real 404
+			}
 			delete(c.trashed, id)
+			restored = append(restored, id)
 		}
-		return errors.New("simulated restore failure")
+		return restored, errors.New("simulated restore failure")
 	}
 	for _, id := range ids {
+		if c.deleted[id] {
+			continue // permanently deleted: skip like a real 404
+		}
 		delete(c.trashed, id)
+		restored = append(restored, id)
 	}
-	return nil
+	return restored, nil
 }
 
 func (c *partialClient) InTrash(ids []string) ([]string, error) {
@@ -777,6 +791,55 @@ func TestUndo_PartialRestoreReconciles(t *testing.T) {
 	}
 	if len(left) != 1 || left[0].ID != "m2" {
 		t.Fatalf("cache remaining = %+v, want only m2", left)
+	}
+}
+
+// TestUndo_AfterPartialPurgeSkipsDeletedRestoresSurvivors pins the live
+// safety check: after a partial purge permanently deletes some cohort
+// messages and leaves others in Trash, a stale undo cache listing both must
+// restore exactly the survivors — the deleted ones are skipped (404, not an
+// error) and never re-inserted as ghosts into the local store.
+func TestUndo_AfterPartialPurgeSkipsDeletedRestoresSurvivors(t *testing.T) {
+	tmp := t.TempDir()
+	dbPath := filepath.Join(tmp, "gclean.db")
+	cachePath := filepath.Join(tmp, "undo-cache.json")
+
+	store, err := storage.Open(dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = store.Close() }()
+
+	records := []storage.StoredMessage{
+		{ID: "m1", SenderEmail: defang.MkEmail("x", "example.com"), Subject: "m1", Date: "2020-01-01T00:00:00Z", Size: 1000, IsJunk: true, JunkReason: models.ReasonNewsletter, Verdict: int(models.VerdictDelete)},
+		{ID: "m2", SenderEmail: defang.MkEmail("x", "example.com"), Subject: "m2", Date: "2020-01-01T00:00:00Z", Size: 1000, IsJunk: true, JunkReason: models.ReasonNewsletter, Verdict: int(models.VerdictDelete)},
+	}
+	if err := storage.SaveUndoCache(cachePath, records); err != nil {
+		t.Fatal(err)
+	}
+
+	// Partial-purge aftermath: m1 permanently deleted (404), m2 still in
+	// Trash, but the cache still lists both (e.g. the purge reconcile was
+	// interrupted before trimming).
+	client := newPartialClient()
+	client.trashed["m2"] = true
+	client.deleted["m1"] = true
+
+	if err := undoWithReconcile(client, store, records, cachePath); err != nil {
+		t.Fatalf("undo after partial purge: %v", err)
+	}
+
+	// Only the survivor is re-inserted; the deleted message is not a ghost.
+	remaining, err := store.AllClassified()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(remaining) != 1 || remaining[0].Message.ID != "m2" {
+		t.Fatalf("store remaining = %+v, want only m2 (no ghost m1)", remaining)
+	}
+	// Nothing is left in Trash, so the cache is removed.
+	if _, statErr := os.Stat(cachePath); !os.IsNotExist(statErr) {
+		t.Fatalf("cache file should be removed, stat err = %v", statErr)
 	}
 }
 

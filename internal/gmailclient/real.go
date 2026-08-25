@@ -206,16 +206,26 @@ func isScopeInsufficient(err error) bool {
 		strings.Contains(haystack, "insufficientPermissions")
 }
 
-func (r *RealClient) RestoreFromTrash(ids []string) error {
+// RestoreFromTrash untrashes the given IDs and returns the subset that was
+// actually restored. A 404 means the message was permanently deleted (e.g. by
+// a partial purge) and cannot be restored — it is skipped, not an error, so a
+// stale undo cache does not abort the whole restore. Other errors abort and
+// return the ids restored so far so the caller can reconcile.
+func (r *RealClient) RestoreFromTrash(ids []string) ([]string, error) {
+	restored := []string{}
 	for i, id := range ids {
 		if err := r.retryMutation("restore message "+id, func() error {
 			_, err := r.service.Users.Messages.Untrash("me", id).Do()
 			return err
 		}); err != nil {
-			return fmt.Errorf("restore message %d/%d (%s): %w", i+1, len(ids), id, err)
+			if isNotFound(err) {
+				continue
+			}
+			return restored, fmt.Errorf("restore message %d/%d (%s): %w", i+1, len(ids), id, err)
 		}
+		restored = append(restored, id)
 	}
-	return nil
+	return restored, nil
 }
 
 // InTrash returns the subset of ids whose TRASH label is present. It is used

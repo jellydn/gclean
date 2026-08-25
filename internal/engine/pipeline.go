@@ -44,7 +44,6 @@ type Pipeline struct {
 type Gmailer interface {
 	ListMessages(query string, max int) ([]*models.Message, error)
 	TrashMessages(ids []string) error
-	RestoreFromTrash(ids []string) error
 	InTrash(ids []string) ([]string, error)
 }
 

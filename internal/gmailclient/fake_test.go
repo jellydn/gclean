@@ -102,8 +102,12 @@ func TestFakeClient_ListAndTrash(t *testing.T) {
 	if len(ids) != 1 || ids[0] != "a" {
 		t.Fatalf("TrashedIDs off: %v", ids)
 	}
-	if err := c.RestoreFromTrash([]string{"a"}); err != nil {
+	restored, err := c.RestoreFromTrash([]string{"a"})
+	if err != nil {
 		t.Fatal(err)
+	}
+	if len(restored) != 1 || restored[0] != "a" {
+		t.Fatalf("RestoreFromTrash = %v, want [a]", restored)
 	}
 	got, _ = c.ListMessages("", 0)
 	if len(got) != 3 {

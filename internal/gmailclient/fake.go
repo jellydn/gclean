@@ -111,13 +111,19 @@ func (f *FakeClient) EmptyTrash() error {
 	return nil
 }
 
-func (f *FakeClient) RestoreFromTrash(ids []string) error {
+// RestoreFromTrash untrashes the given IDs and returns the subset actually
+// restored (those that were in the in-memory trash).
+func (f *FakeClient) RestoreFromTrash(ids []string) ([]string, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	restored := []string{}
 	for _, id := range ids {
-		delete(f.trashed, id)
+		if f.trashed[id] {
+			delete(f.trashed, id)
+			restored = append(restored, id)
+		}
 	}
-	return nil
+	return restored, nil
 }
 
 // InTrash returns the subset of ids that are currently trashed in the

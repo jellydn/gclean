@@ -203,11 +203,48 @@ func TestRealClient_RestoreFromTrash_UsesUntrash(t *testing.T) {
 	}))
 	defer server.Close()
 
-	if err := newHTTPTestClient(t, server).RestoreFromTrash([]string{"m1"}); err != nil {
+	restored, err := newHTTPTestClient(t, server).RestoreFromTrash([]string{"m1"})
+	if err != nil {
 		t.Fatalf("RestoreFromTrash: %v", err)
 	}
 	if gotPath != "/gmail/v1/users/me/messages/m1/untrash" {
 		t.Fatalf("path = %q, want untrash endpoint", gotPath)
+	}
+	if len(restored) != 1 || restored[0] != "m1" {
+		t.Fatalf("RestoreFromTrash = %v, want [m1]", restored)
+	}
+}
+
+func TestRealClient_RestoreFromTrash_404SkipsDeleted(t *testing.T) {
+	stubRetryDelay(t, func(int, error) time.Duration { return 0 })
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost || !strings.HasPrefix(r.URL.Path, "/gmail/v1/users/me/messages/") {
+			http.Error(w, "unexpected request: "+r.Method+" "+r.URL.Path, http.StatusNotFound)
+			return
+		}
+		// Path shape: /gmail/v1/users/me/messages/<id>/untrash
+		id := path.Base(strings.TrimSuffix(r.URL.Path, "/untrash"))
+		switch id {
+		case "gone":
+			// Permanently deleted by a partial purge: untrash 404s.
+			http.Error(w, "deleted", http.StatusNotFound)
+		case "survivor":
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = fmt.Fprint(w, `{}`)
+		default:
+			http.Error(w, "unexpected id: "+id, http.StatusNotFound)
+		}
+	}))
+	defer server.Close()
+
+	// A stale undo cache listing a permanently-deleted message must not abort
+	// the whole restore: the survivor is restored, the deleted id is skipped.
+	restored, err := newHTTPTestClient(t, server).RestoreFromTrash([]string{"gone", "survivor"})
+	if err != nil {
+		t.Fatalf("RestoreFromTrash: %v (404 must skip, not abort)", err)
+	}
+	if len(restored) != 1 || restored[0] != "survivor" {
+		t.Fatalf("RestoreFromTrash = %v, want [survivor]", restored)
 	}
 }
 
