@@ -38,7 +38,7 @@ echo "==> Priming Go module cache"
 go mod download
 
 if ! command -v just >/dev/null 2>&1 \
-  || ! just --version 2>/dev/null | grep -q "just $JUST_VERSION"; then
+  || [ "$(just --version 2>/dev/null | awk '{print $2}')" != "$JUST_VERSION" ]; then
   echo "==> Installing just $JUST_VERSION -> $bin_dir"
   curl --proto '=https' --tlsv1.2 -sSf https://just.systems/install.sh \
     | $sudo_cmd bash -s -- --tag "$JUST_VERSION" --to "$bin_dir"
@@ -47,7 +47,7 @@ else
 fi
 
 if ! command -v golangci-lint >/dev/null 2>&1 \
-  || ! golangci-lint version 2>/dev/null | grep -q "$GOLANGCI_LINT_VERSION"; then
+  || [ "$(golangci-lint version 2>/dev/null | sed -n 's/.*version \([^ ]*\).*/\1/p')" != "$GOLANGCI_LINT_VERSION" ]; then
   echo "==> Installing golangci-lint $GOLANGCI_LINT_VERSION -> $bin_dir"
   tmp_bin="$(mktemp -d)"
   GOBIN="$tmp_bin" go install \
