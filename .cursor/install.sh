@@ -4,9 +4,10 @@
 # Runs after the repository is checked out. Primes the Go module + build caches
 # and installs the two extra dev CLIs the documented `just check` gate expects
 # (`just`, `golangci-lint`). Safe to run repeatedly: every install is guarded by
-# a `command -v` check, so a warm snapshot short-circuits the downloads.
+# a version check, so a warm snapshot short-circuits the downloads.
 set -euo pipefail
 
+JUST_VERSION="1.58.0"
 GOLANGCI_LINT_VERSION="v2.13.1"
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -23,20 +24,30 @@ elif command -v sudo >/dev/null 2>&1 && sudo -n true 2>/dev/null; then
 else
   bin_dir="$(go env GOPATH)/bin"
   mkdir -p "$bin_dir"
+  # The Go bin dir is not on PATH by default. Persist it for later terminals
+  # (idempotently) and export it for this run.
+  rc_file="$HOME/.bashrc"
+  [ ! -f "$rc_file" ] && [ -f "$HOME/.profile" ] && rc_file="$HOME/.profile"
+  if ! grep -Fqs "export PATH=\"$bin_dir" "$rc_file" 2>/dev/null; then
+    printf '\n# gclean cloud-agent tools\nexport PATH="%s:$PATH"\n' "$bin_dir" >> "$rc_file"
+  fi
+  export PATH="$bin_dir:$PATH"
 fi
 
 echo "==> Priming Go module cache"
 go mod download
 
-if ! command -v just >/dev/null 2>&1; then
-  echo "==> Installing just -> $bin_dir"
+if ! command -v just >/dev/null 2>&1 \
+  || ! just --version 2>/dev/null | grep -q "just $JUST_VERSION"; then
+  echo "==> Installing just $JUST_VERSION -> $bin_dir"
   curl --proto '=https' --tlsv1.2 -sSf https://just.systems/install.sh \
-    | $sudo_cmd bash -s -- --to "$bin_dir"
+    | $sudo_cmd bash -s -- --tag "$JUST_VERSION" --to "$bin_dir"
 else
   echo "==> just already present: $(just --version)"
 fi
 
-if ! command -v golangci-lint >/dev/null 2>&1; then
+if ! command -v golangci-lint >/dev/null 2>&1 \
+  || ! golangci-lint version 2>/dev/null | grep -q "$GOLANGCI_LINT_VERSION"; then
   echo "==> Installing golangci-lint $GOLANGCI_LINT_VERSION -> $bin_dir"
   tmp_bin="$(mktemp -d)"
   GOBIN="$tmp_bin" go install \
