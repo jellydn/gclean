@@ -39,12 +39,15 @@ function toast(message, success = false) {
 }
 async function load() {
 	try {
-		[state, settings] = await Promise.all([
-			api("/api/state"),
-			api("/api/settings"),
-		]);
-		render();
+		settings = await api("/api/settings");
 		renderSettings();
+	} catch (e) {
+		toast(e.message);
+		return;
+	}
+	try {
+		state = await api("/api/state");
+		render();
 	} catch (e) {
 		toast(e.message);
 	} finally {
