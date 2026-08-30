@@ -12,9 +12,11 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"gclean/internal/models"
+	"golang.org/x/sync/errgroup"
 	"google.golang.org/api/gmail/v1"
 	"google.golang.org/api/googleapi"
 	"google.golang.org/api/option"
@@ -89,8 +91,9 @@ func NewRealClient(credentialsPath string) (*RealClient, error) {
 }
 
 const (
-	mutationBatchSize   = 1000
-	maxMutationAttempts = 3
+	mutationBatchSize    = 1000
+	maxMutationAttempts  = 3
+	metadataFetchWorkers = 12
 
 	// backoffBase is the first exponential-backoff wait. Google's error-handling
 	// guidance recommends starting at 1s and doubling per retry, with up to 1s
@@ -119,24 +122,19 @@ func (r *RealClient) ListMessages(query string, max int) ([]*models.Message, err
 			return nil, fmt.Errorf("list messages: %w", err)
 		}
 		slog.Info("listed page", "listed", len(resp.Messages), "fetched_so_far", len(out))
-		for _, m := range resp.Messages {
-			if max > 0 && len(out) >= max {
+		messages := resp.Messages
+		if max > 0 {
+			remaining := max - len(out)
+			if remaining <= 0 {
 				return out, nil
 			}
-			full, err := r.service.Users.Messages.Get("me", m.Id).Format("metadata").MetadataHeaders(
-				"From", "To", "Cc", "Subject", "Date",
-				"List-Unsubscribe", "List-ID", "Precedence", "Auto-Submitted",
-			).Do()
-			if err != nil {
-				return nil, fmt.Errorf("get message %s: %w", m.Id, err)
-			}
-			msg := mapGmailMessage(full)
-			out = append(out, msg)
-			r.reportScanProgress(len(out))
-			if len(out)%100 == 0 {
-				slog.Info("fetched metadata", "fetched_so_far", len(out))
-			}
+			messages = messages[:min(len(messages), remaining)]
 		}
+		page, err := r.fetchMetadata(messages, len(out))
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, page...)
 		if resp.NextPageToken == "" {
 			break
 		}
@@ -144,6 +142,42 @@ func (r *RealClient) ListMessages(query string, max int) ([]*models.Message, err
 	}
 	slog.Info("list complete", "total", len(out))
 	return out, nil
+}
+
+// fetchMetadata gets one Gmail list page concurrently. The worker cap stays
+// below Gmail's per-user read quota while avoiding serial request latency.
+func (r *RealClient) fetchMetadata(messages []*gmail.Message, fetched int) ([]*models.Message, error) {
+	result := make([]*models.Message, len(messages))
+	var completed atomic.Int64
+	var group errgroup.Group
+	group.SetLimit(metadataFetchWorkers)
+	for index, metadata := range messages {
+		index, id := index, metadata.Id
+		group.Go(func() error {
+			var full *gmail.Message
+			if err := r.retryMutation("get message "+id, func() error {
+				var err error
+				full, err = r.service.Users.Messages.Get("me", id).Format("metadata").MetadataHeaders(
+					"From", "To", "Cc", "Subject", "Date",
+					"List-Unsubscribe", "List-ID", "Precedence", "Auto-Submitted",
+				).Do()
+				return err
+			}); err != nil {
+				return fmt.Errorf("get message %s: %w", id, err)
+			}
+			result[index] = mapGmailMessage(full)
+			current := fetched + int(completed.Add(1))
+			r.reportScanProgress(current)
+			if current%100 == 0 {
+				slog.Info("fetched metadata", "fetched_so_far", current)
+			}
+			return nil
+		})
+	}
+	if err := group.Wait(); err != nil {
+		return nil, err
+	}
+	return result, nil
 }
 
 func (r *RealClient) TrashMessages(ids []string) error {

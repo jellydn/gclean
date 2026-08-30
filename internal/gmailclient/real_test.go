@@ -11,6 +11,7 @@ import (
 	"path"
 	"strconv"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -59,12 +60,22 @@ func TestMapGmailMessage_CombinesToAndCcRecipients(t *testing.T) {
 }
 
 func TestRealClient_ListMessagesReportsFetchedMetadata(t *testing.T) {
+	var active, maxActive atomic.Int32
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case "/gmail/v1/users/me/messages":
-			_, _ = fmt.Fprint(w, `{"messages":[{"id":"m1"},{"id":"m2"}]}`)
+			_ = json.NewEncoder(w).Encode(map[string]any{"messages": []map[string]string{{"id": "m1"}, {"id": "m2"}}})
 		case "/gmail/v1/users/me/messages/m1", "/gmail/v1/users/me/messages/m2":
-			_, _ = fmt.Fprint(w, `{"id":"message","internalDate":"1700000000000","payload":{"headers":[]}}`)
+			current := active.Add(1)
+			for {
+				observed := maxActive.Load()
+				if current <= observed || maxActive.CompareAndSwap(observed, current) {
+					break
+				}
+			}
+			time.Sleep(20 * time.Millisecond)
+			active.Add(-1)
+			_ = json.NewEncoder(w).Encode(map[string]any{"id": "message", "internalDate": "1700000000000", "payload": map[string]any{"headers": []any{}}})
 		default:
 			http.Error(w, "unexpected request", http.StatusNotFound)
 		}
@@ -72,13 +83,25 @@ func TestRealClient_ListMessagesReportsFetchedMetadata(t *testing.T) {
 	defer server.Close()
 
 	client := newHTTPTestClient(t, server)
+	var progressMu sync.Mutex
 	var progress []int
-	client.SetScanProgress(func(fetched int) { progress = append(progress, fetched) })
+	client.SetScanProgress(func(fetched int) {
+		progressMu.Lock()
+		progress = append(progress, fetched)
+		progressMu.Unlock()
+	})
 	if _, err := client.ListMessages("", 0); err != nil {
 		t.Fatalf("ListMessages: %v", err)
 	}
-	if got := fmt.Sprint(progress); got != "[1 2]" {
-		t.Fatalf("scan progress = %s, want [1 2]", got)
+	progressMu.Lock()
+	gotProgress := fmt.Sprint(progress)
+	validProgress := len(progress) == 2 && progress[0]+progress[1] == 3
+	progressMu.Unlock()
+	if !validProgress {
+		t.Fatalf("scan progress = %s, want one update each for 1 and 2", gotProgress)
+	}
+	if maxActive.Load() < 2 {
+		t.Fatalf("concurrent metadata requests = %d, want at least 2", maxActive.Load())
 	}
 }
 
