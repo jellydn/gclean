@@ -3,6 +3,7 @@ package desktop
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -81,6 +82,14 @@ func TestDesktopPurgeIsDisabledByDefault(t *testing.T) {
 	doAPI(t, app, server.URL, http.MethodPost, "/api/purge", actionRequest{Confirmation: purgeConfirmation}, &apiError, http.StatusForbidden)
 	if apiError["error"] == "" {
 		t.Fatal("purge denial should explain the safeguard")
+	}
+}
+
+func TestUserFacingErrorForRevokedOAuthToken(t *testing.T) {
+	got := userFacingError(errors.New(`get Gmail profile: auth: cannot fetch token: 400 Response: {"error":"invalid_grant"}`))
+	want := "Gmail access expired or was revoked. In Settings, choose your OAuth credentials JSON, then select Connect / reconnect."
+	if got != want {
+		t.Fatalf("userFacingError() = %q, want %q", got, want)
 	}
 }
 

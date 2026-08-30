@@ -318,9 +318,19 @@ func (a *App) api(next func(http.ResponseWriter, *http.Request) error) http.Hand
 				writeError(w, apiErr.status, apiErr.Error())
 				return
 			}
-			writeError(w, http.StatusInternalServerError, err.Error())
+			writeError(w, http.StatusInternalServerError, userFacingError(err))
 		}
 	}
+}
+
+// userFacingError removes OAuth-provider details from errors that require the
+// same local recovery action. Other errors remain available for diagnosis.
+func userFacingError(err error) string {
+	message := err.Error()
+	if strings.Contains(strings.ToLower(message), "invalid_grant") {
+		return "Gmail access expired or was revoked. In Settings, choose your OAuth credentials JSON, then select Connect / reconnect."
+	}
+	return message
 }
 
 func (a *App) getState(w http.ResponseWriter, _ *http.Request) error {
