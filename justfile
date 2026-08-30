@@ -26,7 +26,7 @@ test-pkg pkg="internal/engine/":
 test-integration:
     go test -run TestScanCommand_DevFixturePipeline ./internal/cli/
 
-# Build unsigned portable desktop archives for macOS, Windows, and Linux.
+# Build portable archives; set MACOS_ADHOC_SIGN=1 on macOS for beta signing.
 package-desktop:
     ./scripts/package-desktop.sh
 

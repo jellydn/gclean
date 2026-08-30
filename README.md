@@ -33,10 +33,12 @@ same `config.yaml` used by the CLI; secret and token contents are never shown.
 See [Desktop setup and packaging](docs/desktop.md) for Google Cloud Console,
 security, cross-platform builds, and platform-specific launch notes.
 Pull requests and `main` builds produce short-lived portable workflow
-artifacts. SemVer tags (`v1.2.3`) publish macOS, Linux, and Windows archives
-plus `SHA256SUMS` to GitHub Releases. Container images are intentionally not
-published because this is a loopback desktop application, not a network
-service.
+artifacts, with macOS binaries ad-hoc signed for credential-free beta testing.
+SemVer tags (`v1.2.3`) publish macOS, Linux, and Windows archives plus
+`SHA256SUMS` as GitHub prereleases. These beta artifacts are not Apple-notarized
+production releases; see the desktop guide for checksum, Gatekeeper, and
+quarantine instructions. Container images are intentionally not published
+because this is a loopback desktop application, not a network service.
 
 ## Status
 

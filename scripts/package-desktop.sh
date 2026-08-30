@@ -3,9 +3,21 @@ set -euo pipefail
 
 root=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 version=${VERSION:-dev}
+macos_adhoc_sign=${MACOS_ADHOC_SIGN:-0}
 dist="$root/dist"
 mkdir -p "$dist"
 rm -f "$dist"/gclean-* "$dist/SHA256SUMS"
+
+if [[ $macos_adhoc_sign != 0 && $macos_adhoc_sign != 1 ]]; then
+  echo "MACOS_ADHOC_SIGN must be 0 or 1" >&2
+  exit 1
+fi
+if [[ $macos_adhoc_sign == 1 ]]; then
+  if [[ $(uname -s) != Darwin ]] || ! command -v codesign >/dev/null 2>&1; then
+    echo "MACOS_ADHOC_SIGN=1 requires macOS and codesign" >&2
+    exit 1
+  fi
+fi
 
 targets=(
   "darwin amd64"
@@ -25,6 +37,10 @@ for target in "${targets[@]}"; do
   work=$(mktemp -d)
   echo "Building $os/$arch"
   CGO_ENABLED=0 GOOS="$os" GOARCH="$arch" go build -trimpath -ldflags="-s -w" -o "$work/$binary" "$root/cmd/gclean"
+  if [[ $os == darwin && $macos_adhoc_sign == 1 ]]; then
+    codesign --force --sign - --timestamp=none "$work/$binary"
+    codesign --verify --strict --verbose=2 "$work/$binary"
+  fi
   if [[ $os == windows ]]; then
     if command -v zip >/dev/null 2>&1; then
       (cd "$work" && zip -q "$dist/$name.zip" "$binary")

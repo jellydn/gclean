@@ -41,10 +41,12 @@ jobs:
         run: ./scripts/lint-email-literals.sh
 
   package:
-    name: Package portable desktop binaries
+    name: Package beta desktop binaries
     needs: test
-    runs-on: ubuntu-24.04
+    runs-on: macos-15
     timeout-minutes: 20
+    env:
+      MACOS_ADHOC_SIGN: "1"
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -74,7 +76,16 @@ jobs:
       - name: Build portable archives
         run: ./scripts/package-desktop.sh
       - name: Verify checksums
-        run: cd dist && sha256sum --check SHA256SUMS
+        run: cd dist && shasum -a 256 --check SHA256SUMS
+      - name: Verify ad-hoc macOS signatures
+        shell: bash
+        run: |
+          for archive in dist/gclean-*-darwin-*.tar.gz; do
+            work=$(mktemp -d)
+            tar -xzf "$archive" -C "$work"
+            codesign --verify --strict --verbose=2 "$work/gclean"
+            codesign -dv --verbose=2 "$work/gclean" 2>&1 | grep -F 'Signature=adhoc'
+          done
       - name: Upload workflow artifact
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
@@ -114,5 +125,6 @@ jobs:
             gh release create "$GITHUB_REF_NAME" dist/* \
               --verify-tag \
               --generate-notes \
+              --prerelease \
               --title "gclean $GITHUB_REF_NAME"
           fi

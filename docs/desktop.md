@@ -143,19 +143,30 @@ just check
 ```
 
 Archives and `SHA256SUMS` are written to `dist/`. Set `VERSION` to control the
-archive names. The packaging script creates unsigned portable binaries; it
-does not publish anything.
+archive names. By default the packaging script creates unsigned portable
+binaries and does not publish anything. On macOS, set `MACOS_ADHOC_SIGN=1` to
+ad-hoc sign and verify the two macOS binaries without an Apple Developer
+account:
+
+```bash
+VERSION=local MACOS_ADHOC_SIGN=1 ./scripts/package-desktop.sh
+```
+
+An ad-hoc signature records code integrity, but provides no verified developer
+identity, Apple trust chain, or notarization.
 
 ### Automated builds and releases
 
 GitHub Actions runs vet, build, race-enabled tests, the email-literal safety
-lint, and portable packaging for pull requests and pushes to `main`. The
-portable archives and checksum manifest are retained as a workflow artifact
-for 14 days. CI archive names use the immutable commit-based version
+lint, and portable packaging for pull requests and pushes to `main`. Its macOS
+runner ad-hoc signs and verifies the macOS binaries; this needs no Apple
+Developer credentials. The portable archives and checksum manifest are
+retained as a workflow artifact for 14 days. These are explicitly beta/tester
+artifacts. CI archive names use the immutable commit-based version
 `ci-<12-character SHA>`.
 
 Pushing a SemVer tag such as `v1.2.3` or `v1.2.3-rc.1` runs the same checks and
-publishes a GitHub Release containing:
+publishes a GitHub **prerelease** containing:
 
 - `gclean-<version>-darwin-{amd64,arm64}.tar.gz`
 - `gclean-<version>-linux-{amd64,arm64}.tar.gz`
@@ -168,10 +179,12 @@ rerun for an existing tag replaces that tag's assets with the freshly verified
 outputs. Actions are pinned to immutable revisions, permissions default to
 read-only, and only the tag-only release job receives `contents: write`.
 
-Release binaries are currently unsigned. No signing or notarization
-credentials are configured in the repository, so signing remains a guarded
-future release step rather than exposing optional secrets to normal CI. See
-the platform notes below before distributing binaries broadly.
+The macOS beta binaries are ad-hoc signed; Windows and Linux beta binaries are
+unsigned. No Developer ID or notarization credentials are configured in the
+repository. A production macOS release must instead be signed with a Developer
+ID Application certificate, notarized with Apple, stapled, and assessed with
+Gatekeeper. That credentialed production pipeline is deliberately not
+represented by this beta workflow.
 
 There is intentionally no container-image release. The repository has no
 Dockerfile or registry convention, and `gclean desktop` is a user-facing,
@@ -182,8 +195,39 @@ signing.
 
 ### Platform notes
 
-- **macOS:** first-party distribution should codesign and notarize the binary.
-  An unsigned local build may require **Open Anyway** in Privacy & Security.
+- **macOS beta installation:** download the workflow artifact for the exact
+  commit, unzip it, and verify its checksum before extracting the archive:
+
+  ```bash
+  cd /path/to/downloaded/artifact
+  shasum -a 256 --check SHA256SUMS
+  tar -xzf gclean-<version>-darwin-<amd64-or-arm64>.tar.gz
+  codesign --verify --strict --verbose=2 ./gclean
+  codesign -dv --verbose=2 ./gclean 2>&1 | grep 'Signature=adhoc'
+  xattr -l ./gclean
+  ./gclean desktop
+  ```
+
+  Choose `arm64` for Apple silicon and `amd64` for Intel. The ad-hoc signature
+  does **not** make the download trusted or bypass Gatekeeper. macOS may block
+  it because there is no verified publisher and the binary is not notarized.
+  After attempting to open it, use **System Settings → Privacy & Security →
+  Open Anyway** and confirm only if you trust the commit and checksum. As a
+  more explicit alternative, after those checks remove only the quarantine
+  attribute and retry:
+
+  ```bash
+  xattr -d com.apple.quarantine ./gclean
+  ./gclean desktop
+  ```
+
+  Do not use recursive `xattr -cr`: it removes unrelated extended attributes.
+  Removing quarantine changes Gatekeeper's downloaded-file handling; it does
+  not add publisher identity or notarization and should not be done for an
+  artifact whose source and checksum you have not verified.
+- **macOS production:** first-party distribution should use Developer ID
+  signing and Apple notarization/stapling. Ad-hoc beta signatures are not a
+  substitute.
 - **Windows:** an unsigned download may trigger SmartScreen. Signing with an
   Authenticode certificate is recommended before public distribution.
 - **Linux:** browser launch uses `xdg-open` and otherwise prints the local URL.
