@@ -69,6 +69,8 @@ type App struct {
 	operation sync.Mutex
 	authMu    sync.RWMutex
 	auth      authStatus
+	scanMu    sync.RWMutex
+	scanState scanStatus
 	originMu  sync.RWMutex
 	host      string
 }
@@ -76,6 +78,12 @@ type App struct {
 type authStatus struct {
 	State string `json:"state"`
 	Error string `json:"error,omitempty"`
+}
+
+type scanStatus struct {
+	State   string `json:"state"`
+	Fetched int    `json:"fetched"`
+	Error   string `json:"error,omitempty"`
 }
 
 type senderRow struct {
@@ -190,11 +198,12 @@ func New(cfg Config) (*App, error) {
 		return nil, fmt.Errorf("create session token: %w", err)
 	}
 	return &App{
-		cfg:      cfg,
-		store:    store,
-		token:    base64.RawURLEncoding.EncodeToString(tokenBytes),
-		selected: map[string]struct{}{},
-		auth:     authStatus{State: "idle"},
+		cfg:       cfg,
+		store:     store,
+		token:     base64.RawURLEncoding.EncodeToString(tokenBytes),
+		selected:  map[string]struct{}{},
+		auth:      authStatus{State: "idle"},
+		scanState: scanStatus{State: "idle"},
 	}, nil
 }
 
@@ -213,6 +222,7 @@ func (a *App) Handler() http.Handler {
 	mux.HandleFunc("POST /api/settings/credentials", a.api(a.saveCredentials))
 	mux.HandleFunc("POST /api/logout", a.api(a.logout))
 	mux.HandleFunc("POST /api/scan", a.api(a.scan))
+	mux.HandleFunc("GET /api/scan/status", a.api(a.getScanStatus))
 	mux.HandleFunc("POST /api/selection", a.api(a.selection))
 	mux.HandleFunc("POST /api/trash", a.api(a.trash))
 	mux.HandleFunc("POST /api/restore", a.api(a.restore))
@@ -347,6 +357,19 @@ func (a *App) getSettings(w http.ResponseWriter, _ *http.Request) error {
 		return err
 	}
 	return writeJSON(w, http.StatusOK, settings)
+}
+
+func (a *App) getScanStatus(w http.ResponseWriter, _ *http.Request) error {
+	a.scanMu.RLock()
+	status := a.scanState
+	a.scanMu.RUnlock()
+	return writeJSON(w, http.StatusOK, status)
+}
+
+func (a *App) setScanStatus(status scanStatus) {
+	a.scanMu.Lock()
+	a.scanState = status
+	a.scanMu.Unlock()
 }
 
 func (a *App) buildSettings() (settingsResponse, error) {
@@ -712,22 +735,34 @@ func (a *App) scan(w http.ResponseWriter, r *http.Request) error {
 		return &statusError{http.StatusConflict, "another operation is already running"}
 	}
 	defer a.operation.Unlock()
+	a.setScanStatus(scanStatus{State: "scanning"})
 	client, account, err := a.getClientAndAccount()
 	if err != nil {
+		a.setScanStatus(scanStatus{State: "error", Error: userFacingError(err)})
 		return err
+	}
+	if reporter, ok := client.(interface{ SetScanProgress(func(int)) }); ok {
+		reporter.SetScanProgress(func(fetched int) {
+			a.setScanStatus(scanStatus{State: "scanning", Fetched: fetched})
+		})
+		defer reporter.SetScanProgress(nil)
 	}
 	doc, err := a.cfg.LoadConfig()
 	if err != nil {
+		a.setScanStatus(scanStatus{State: "error", Error: err.Error()})
 		return err
 	}
 	compiled, err := doc.CompileFull()
 	if err != nil {
+		a.setScanStatus(scanStatus{State: "error", Error: err.Error()})
 		return err
 	}
 	p := &engine.Pipeline{Store: a.store, Reader: client, Keep: compiled.Keep, Rules: compiled.Rules, Account: account, CachePath: a.cfg.CachePath}
 	if err := p.Run(p.ScanStages()...); err != nil {
+		a.setScanStatus(scanStatus{State: "error", Error: err.Error()})
 		return err
 	}
+	a.setScanStatus(scanStatus{State: "complete", Fetched: p.Scanned()})
 	return writeJSON(w, http.StatusOK, actionResponse{Message: fmt.Sprintf("Scanned %d message metadata records. Nothing was changed in Gmail.", p.Scanned()), Count: p.Scanned()})
 }
 

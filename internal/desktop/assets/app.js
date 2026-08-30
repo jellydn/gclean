@@ -230,11 +230,28 @@ $("select-all").addEventListener("change", async (e) => {
 	}
 });
 $("filter").addEventListener("input", renderSenders);
+let scanProgressTimer;
+function startScanProgress() {
+	return setInterval(async () => {
+		try {
+			const progress = await api("/api/scan/status");
+			if (progress.state === "scanning") {
+				busy(
+					`Scanning Gmail metadata… ${progress.fetched.toLocaleString()} fetched`,
+					"Showing verified Gmail metadata progress. Message bodies are never downloaded.",
+				);
+			}
+		} catch (_) {
+			// The scan request reports its own errors.
+		}
+	}, 1000);
+}
 $("scan").addEventListener("click", async () => {
 	busy(
 		"Scanning Gmail metadata…",
 		"Large mailboxes can take several minutes. Message bodies are never downloaded.",
 	);
+	scanProgressTimer = startScanProgress();
 	try {
 		const result = await api("/api/scan", {});
 		toast(result.message, true);
@@ -242,6 +259,7 @@ $("scan").addEventListener("click", async () => {
 	} catch (e) {
 		toast(e.message);
 	} finally {
+		clearInterval(scanProgressTimer);
 		idle();
 	}
 });

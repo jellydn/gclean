@@ -39,6 +39,11 @@ func TestDesktopWorkflowRequiresPreviewAndSupportsRestore(t *testing.T) {
 	if scan.Count != 2 {
 		t.Fatalf("scan count = %d, want 2", scan.Count)
 	}
+	var scanState scanStatus
+	doAPI(t, app, server.URL, http.MethodGet, "/api/scan/status", nil, &scanState, http.StatusOK)
+	if scanState.State != "complete" || scanState.Fetched != 2 {
+		t.Fatalf("scan status = %+v, want complete with 2 messages", scanState)
+	}
 
 	var state stateResponse
 	doAPI(t, app, server.URL, http.MethodGet, "/api/state", nil, &state, http.StatusOK)
@@ -90,6 +95,18 @@ func TestUserFacingErrorForRevokedOAuthToken(t *testing.T) {
 	want := "Gmail access expired or was revoked. In Settings, choose your OAuth credentials JSON, then select Connect / reconnect."
 	if got != want {
 		t.Fatalf("userFacingError() = %q, want %q", got, want)
+	}
+}
+
+func TestScanStatusDefaultsToIdle(t *testing.T) {
+	app, _ := newTestApp(t, false)
+	server := httptest.NewServer(app.Handler())
+	defer server.Close()
+
+	var status scanStatus
+	doAPI(t, app, server.URL, http.MethodGet, "/api/scan/status", nil, &status, http.StatusOK)
+	if status.State != "idle" || status.Fetched != 0 {
+		t.Fatalf("scan status = %+v, want idle with no messages", status)
 	}
 }
 
