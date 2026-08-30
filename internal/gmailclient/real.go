@@ -11,6 +11,7 @@ import (
 	"net/url"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"gclean/internal/models"
@@ -27,6 +28,25 @@ var ErrCredentialsMissing = errors.New("gmail credentials.json not found; drop i
 type RealClient struct {
 	credentialsPath string
 	service         *gmail.Service
+	progressMu      sync.RWMutex
+	scanProgress    func(int)
+}
+
+// SetScanProgress registers a callback for each fetched metadata record.
+// Desktop uses it to show live scan progress; callers must clear it when done.
+func (r *RealClient) SetScanProgress(progress func(int)) {
+	r.progressMu.Lock()
+	r.scanProgress = progress
+	r.progressMu.Unlock()
+}
+
+func (r *RealClient) reportScanProgress(fetched int) {
+	r.progressMu.RLock()
+	progress := r.scanProgress
+	r.progressMu.RUnlock()
+	if progress != nil {
+		progress(fetched)
+	}
 }
 
 func (r *RealClient) AccountEmail() (string, error) {
@@ -112,6 +132,7 @@ func (r *RealClient) ListMessages(query string, max int) ([]*models.Message, err
 			}
 			msg := mapGmailMessage(full)
 			out = append(out, msg)
+			r.reportScanProgress(len(out))
 			if len(out)%100 == 0 {
 				slog.Info("fetched metadata", "fetched_so_far", len(out))
 			}

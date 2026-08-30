@@ -58,6 +58,30 @@ func TestMapGmailMessage_CombinesToAndCcRecipients(t *testing.T) {
 	}
 }
 
+func TestRealClient_ListMessagesReportsFetchedMetadata(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/gmail/v1/users/me/messages":
+			_, _ = fmt.Fprint(w, `{"messages":[{"id":"m1"},{"id":"m2"}]}`)
+		case "/gmail/v1/users/me/messages/m1", "/gmail/v1/users/me/messages/m2":
+			_, _ = fmt.Fprint(w, `{"id":"message","internalDate":"1700000000000","payload":{"headers":[]}}`)
+		default:
+			http.Error(w, "unexpected request", http.StatusNotFound)
+		}
+	}))
+	defer server.Close()
+
+	client := newHTTPTestClient(t, server)
+	var progress []int
+	client.SetScanProgress(func(fetched int) { progress = append(progress, fetched) })
+	if _, err := client.ListMessages("", 0); err != nil {
+		t.Fatalf("ListMessages: %v", err)
+	}
+	if got := fmt.Sprint(progress); got != "[1 2]" {
+		t.Fatalf("scan progress = %s, want [1 2]", got)
+	}
+}
+
 func TestRealClient_TrashMessages_RetriesTransientErrors(t *testing.T) {
 	stubRetryDelay(t, func(int, error) time.Duration { return 0 })
 	var attempts atomic.Int32
