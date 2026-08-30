@@ -5,3 +5,4 @@
 *.db
 undo-cache.json
 /bin/gclean
+/dist/

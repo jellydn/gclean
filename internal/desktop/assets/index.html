@@ -1,0 +1,71 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="gclean-token" content="{{SESSION_TOKEN}}">
+  <title>gclean — Gmail storage, safely</title>
+  <link rel="stylesheet" href="/assets/app.css">
+</head>
+<body>
+  <div class="shell">
+    <aside>
+      <a class="brand" href="#top" aria-label="gclean home"><span class="mark">g</span><span>gclean</span></a>
+      <nav aria-label="Workflow">
+        <a href="#overview" class="active"><span>01</span> Overview</a>
+        <a href="#review"><span>02</span> Review</a>
+        <a href="#safety"><span>03</span> Safety</a>
+      </nav>
+      <div class="privacy"><span class="shield">◇</span><div><strong>Metadata only</strong><small>Message bodies never leave Gmail.</small></div></div>
+    </aside>
+    <main id="top">
+      <header>
+        <div><p class="eyebrow">GMAIL STORAGE ASSISTANT</p><h1>Make space.<br><em>Keep what matters.</em></h1></div>
+        <div id="connection" class="status"><span></span><b>Checking setup…</b></div>
+      </header>
+
+      <section id="setup" class="setup hidden" aria-live="polite">
+        <div><p class="eyebrow">ONE-TIME SETUP</p><h2>Connect your Gmail account</h2><p>gclean uses a Desktop OAuth client and requests only permission to read metadata and move messages to or from Trash.</p></div>
+        <ol><li>Enable the Gmail API in Google Cloud Console.</li><li>Create an OAuth client with application type <b>Desktop app</b>.</li><li>Save the download as <code id="credentials-path">~/.config/gclean/credentials.json</code>.</li></ol>
+        <button id="login">Connect with Google <span>↗</span></button>
+        <a id="auth-link" class="hidden" target="_blank" rel="noopener">Open Google authorization</a>
+      </section>
+
+      <section id="overview" class="overview">
+        <div class="metric hero-metric"><small>ESTIMATED STORAGE</small><strong id="total-storage">—</strong><span id="total-messages">No scan yet</span></div>
+        <div class="metric reclaim"><small>SAFE TO RECLAIM</small><strong id="reclaim">—</strong><span id="delete-count">Preview required</span></div>
+        <div class="metric"><small>PROTECTED / KEPT</small><strong id="keep-count">—</strong><span>Contacts, recent & important</span></div>
+        <div class="scan-card"><div><small>DISCOVER</small><h2>Refresh Gmail metadata</h2><p>Reads headers, labels, dates, and size estimates. It never downloads message bodies or changes Gmail.</p></div><button id="scan">Scan Gmail <span>→</span></button></div>
+      </section>
+
+      <section id="review" class="review">
+        <div class="section-head"><div><p class="eyebrow">PREVIEW FIRST</p><h2>Review cleanup candidates</h2><p>Only planner-approved junk appears here. Uncheck any sender to keep all of their mail.</p></div><label class="search"><span>⌕</span><input id="filter" type="search" placeholder="Filter sender or reason"></label></div>
+        <div class="review-grid">
+          <div class="table-card">
+            <div class="table-tools"><label><input id="select-all" type="checkbox" checked> Select visible</label><span id="sender-count">0 senders</span></div>
+            <div class="table-wrap"><table><thead><tr><th></th><th>Sender</th><th>Reason</th><th>Messages</th><th>Reclaim</th></tr></thead><tbody id="senders"><tr><td colspan="5" class="empty">Run a scan to discover candidates.</td></tr></tbody></table></div>
+          </div>
+          <div class="selection-card">
+            <p class="eyebrow">YOUR SELECTION</p><strong id="selected-storage">0 B</strong><span id="selected-count">0 messages</span>
+            <div class="safe-note"><b>Moves to Trash — not delete</b><p>Gmail keeps trashed mail for up to 30 days. gclean also keeps an integrity-checked local undo record.</p></div>
+            <button id="open-trash" class="danger-soft" disabled>Review & move to Trash <span>→</span></button>
+          </div>
+        </div>
+        <details><summary>Inspect individual messages <span>⌄</span></summary><div id="messages" class="messages"></div></details>
+      </section>
+
+      <section id="safety" class="safety">
+        <div><p class="eyebrow">RECOVERY</p><h2>Changed your mind?</h2><p id="undo-copy">No gclean batch is currently waiting in Trash.</p></div>
+        <button id="restore" class="secondary" disabled>Restore last batch</button>
+        <div class="purge-zone"><div><b>Permanent cleanup</b><p>Emptying all Gmail Trash is intentionally disabled by default.</p></div><button id="open-purge" class="text-button" disabled>Empty Trash…</button></div>
+      </section>
+      <footer>Local-first · Open source · No message bodies · Preview before changes</footer>
+    </main>
+  </div>
+
+  <dialog id="confirm-dialog"><form method="dialog"><button class="close" value="cancel" aria-label="Close">×</button><p class="eyebrow" id="dialog-eyebrow">CONFIRM CLEANUP</p><h2 id="dialog-title">Move selected mail to Trash?</h2><p id="dialog-copy"></p><div class="confirm-summary"><strong id="dialog-size"></strong><span id="dialog-count"></span></div><label id="confirmation-label">Type <b>MOVE TO TRASH</b> to confirm<input id="confirmation" autocomplete="off"></label><div class="dialog-actions"><button value="cancel" class="secondary">Cancel</button><button id="confirm-action" value="default" class="danger">Move to Trash</button></div></form></dialog>
+  <div id="busy" class="busy hidden" role="status"><span class="spinner"></span><div><b id="busy-title">Working…</b><small id="busy-copy">Keep this window open.</small></div></div>
+  <div id="toast" class="toast hidden" role="alert"></div>
+  <script src="/assets/app.js" defer></script>
+</body>
+</html>

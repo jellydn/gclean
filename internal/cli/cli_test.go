@@ -31,7 +31,7 @@ func TestBuild_Help(t *testing.T) {
 		t.Fatalf("help should not error: %v", err)
 	}
 	body := out.String()
-	for _, want := range []string{"login", "logout", "scan", "stats", "dry-run", "clean", "undo", "purge", "dev"} {
+	for _, want := range []string{"login", "logout", "desktop", "scan", "stats", "dry-run", "clean", "undo", "purge", "dev"} {
 		if !strings.Contains(body, want) {
 			t.Errorf("--help missing %q\nbody:\n%s", want, body)
 		}

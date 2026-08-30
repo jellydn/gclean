@@ -2,7 +2,10 @@ package gmailclient
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net"
 	"net/http"
@@ -18,11 +21,10 @@ import (
 	"google.golang.org/api/gmail/v1"
 )
 
-var // mail.google.com (full access) is required in addition to modify: Google's
-// backend rejects both batchDelete and delete with gmail.modify alone
-// (googleapis/google-api-python-client#2710), so purge would be broken
-// without it. Full access is a sensitive scope; the consent screen says so.
-oauthScopes = []string{gmail.GmailReadonlyScope, gmail.GmailModifyScope, gmail.MailGoogleComScope}
+// gmail.modify includes metadata reads plus Trash and restore. It is the
+// least-privilege default. Permanent deletion requires mail.google.com and is
+// requested only when a user explicitly opts into purge authorization.
+var oauthScopes = []string{gmail.GmailModifyScope}
 
 const oauthListenHost = "localhost"
 
@@ -49,11 +51,21 @@ func LoadConfig(credentialsPath string) (*oauth2.Config, error) {
 // LoadConfigWithRedirect reads credentials.json and sets the redirect URI
 // used by the OAuth authorization and token-exchange requests.
 func LoadConfigWithRedirect(credentialsPath, redirectURL string) (*oauth2.Config, error) {
+	return LoadConfigWithRedirectAndPurge(credentialsPath, redirectURL, false)
+}
+
+// LoadConfigWithRedirectAndPurge optionally requests Gmail's full-access
+// scope. Callers must expose this as an explicit destructive-capability opt-in.
+func LoadConfigWithRedirectAndPurge(credentialsPath, redirectURL string, allowPurge bool) (*oauth2.Config, error) {
 	b, err := os.ReadFile(credentialsPath)
 	if err != nil {
 		return nil, fmt.Errorf("read credentials: %w", err)
 	}
-	cfg, err := google.ConfigFromJSON(b, oauthScopes...)
+	scopes := oauthScopes
+	if allowPurge {
+		scopes = []string{gmail.GmailModifyScope, gmail.MailGoogleComScope}
+	}
+	cfg, err := google.ConfigFromJSON(b, scopes...)
 	if err != nil {
 		return nil, fmt.Errorf("parse credentials: %w", err)
 	}
@@ -104,6 +116,7 @@ type AuthCodeServer struct {
 	server   *http.Server
 	listener net.Listener
 	redirect string
+	state    string
 	code     chan string
 	errCh    chan error
 }
@@ -112,7 +125,10 @@ type AuthCodeServer struct {
 // returns a server ready to receive the callback. The redirect URI always uses
 // the registered localhost hostname, even when the listener resolves it to an
 // IPv4 or IPv6 loopback address internally.
-func NewAuthCodeServer() (*AuthCodeServer, error) {
+func NewAuthCodeServer(expectedState string) (*AuthCodeServer, error) {
+	if expectedState == "" {
+		return nil, errors.New("OAuth state must not be empty")
+	}
 	listener, err := net.Listen("tcp", oauthListenHost+":0")
 	if err != nil {
 		return nil, fmt.Errorf("listen for OAuth callback: %w", err)
@@ -120,11 +136,16 @@ func NewAuthCodeServer() (*AuthCodeServer, error) {
 	s := &AuthCodeServer{
 		listener: listener,
 		redirect: "http://" + oauthListenHost + ":" + strconv.Itoa(listener.Addr().(*net.TCPAddr).Port),
+		state:    expectedState,
 		code:     make(chan string, 1),
 		errCh:    make(chan error, 1),
 	}
 	mux := http.NewServeMux()
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Query().Get("state") != s.state {
+			http.Error(w, "invalid OAuth state", http.StatusBadRequest)
+			return
+		}
 		code := r.URL.Query().Get("code")
 		if code == "" {
 			select {
@@ -150,6 +171,16 @@ func NewAuthCodeServer() (*AuthCodeServer, error) {
 		}
 	}()
 	return s, nil
+}
+
+// NewOAuthState returns an unguessable state value used to bind an OAuth
+// callback to the process that initiated it.
+func NewOAuthState() (string, error) {
+	b := make([]byte, 24)
+	if _, err := rand.Read(b); err != nil {
+		return "", err
+	}
+	return base64.RawURLEncoding.EncodeToString(b), nil
 }
 
 // RedirectURL returns the exact redirect URI registered for this callback

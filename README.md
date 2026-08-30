@@ -1,8 +1,32 @@
-# gclean — Gmail Clean CLI
+# gclean — Gmail cleaner for desktop and terminal
 
-Developer-first CLI to reclaim Gmail storage safely.
+Cross-platform desktop workflow and developer-friendly CLI to reclaim Gmail storage safely.
 Preserve important conversations, identify newsletters / notifications / marketing,
 recover storage. Safe by default. Dry-run first. Trash before purge.
+
+## Desktop app
+
+The desktop UI ships inside the same single `gclean` binary. It runs on a
+random loopback-only port and opens in the default browser, so there is no
+Electron runtime, native webview dependency, or background cloud service.
+
+```bash
+go build -o gclean ./cmd/gclean
+./gclean desktop
+
+# Safe no-network demo against the bundled corpus:
+GCLEAN_DB_PATH=$(mktemp -d)/gclean.db ./gclean desktop \
+  --fixtures testdata/fixtures/messages.json
+```
+
+The workflow is scan metadata → review storage estimates and planner-approved
+senders/messages → filter the cohort → type an explicit confirmation → move to
+Trash. The last batch can be restored. Permanent Empty Trash is hidden unless
+the app is started with `--allow-purge`, and requires a separate full-access
+OAuth grant plus an irreversible-action confirmation.
+
+See [Desktop setup and packaging](docs/desktop.md) for Google Cloud Console,
+security, cross-platform builds, and platform-specific launch notes.
 
 ## Status
 
@@ -22,11 +46,12 @@ This scaffold implements the **local pipeline end-to-end against fixture data**:
   when using the fixture client.
 
 OAuth login and real Gmail read/write support are now implemented. Run
-`gclean login` to authorize a desktop OAuth client, then `gclean scan` can fetch
+`gclean login` to authorize a desktop OAuth client with the least-privilege
+`gmail.modify` scope, then `gclean scan` can fetch
 Gmail metadata without `--fixtures`. The real client retries individual Trash and
 restore calls and empties Trash by paginating the Trash label and batch-deleting
-up to 1,000 IDs per request (full-access scope; falls back to per-message delete
-otherwise). Mutations honor the server's `Retry-After` hint and reconcile partial
+up to 1,000 IDs per request when separately authorized for full access. Mutations
+honor the server's `Retry-After` hint and reconcile partial
 failures against Gmail's actual state via `InTrash`, so a partially-applied
 `clean`/`purge` trims the undo cache and local store instead of drifting. The seam
 is `internal/gmailclient.Client`, so the fixture client remains available for
@@ -109,14 +134,17 @@ production use.
 - The planner refuses to delete a non-junk message even if a delete rule
   matches — explicit safety-check in `internal/engine/planner.go`
 - Local-only by default; no bodies ever loaded
-- OAuth flow will request offline gmail.readonly + gmail.modify only
+- Default OAuth requests only `gmail.modify` (metadata reads + Trash/restore)
+- Permanent purge requires a separate `login --allow-permanent-delete` grant
+  and an explicit runtime `desktop --allow-purge` opt-in
 
 ## Roadmap → next session
 
 - ~~Reconcile local SQLite and undo-cache state after partial or interrupted real Gmail mutations~~ — done (InTrash reconcile)
 - Live-account end-to-end validation (TC-01…TC-10 in `.planning/live-account-mutation-test-plan.md`)
 - People-API enrichment (`IsContact`) on scan
-- `gclean tui` Bubble Tea UI for §12 (toggle senders, see reclaim before action)
+- Native signed/notarized installer bundles (the portable single binary and
+  browser-hosted desktop UI are available now)
 - Per-message rate-limited batcher for `clean`
 - `gclean rules` editor (currently show-only)
 - `gclean report` analytics export
@@ -133,6 +161,7 @@ internal/engine/            classifier, protector, evaluator (rules DSL), planne
 internal/gmailclient/       Client interface + FakeClient + OAuth-backed RealClient
 internal/models/            Cross-package types
 internal/storage/           modernc/sqlite schema + stats aggregator + sender-safety rollup
+internal/desktop/           Loopback API + embedded responsive desktop UI
 internal/tui/               Bubble Tea checkbox UI for `gclean tui` (EXPERIMENTAL)
 testdata/fixtures/          40-message sample corpus for local dev
 ```

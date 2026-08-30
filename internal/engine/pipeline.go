@@ -27,6 +27,10 @@ type Pipeline struct {
 	// disables caching (some callers, e.g. dry-run, don't trash).
 	CachePath     string
 	SelectionPath string
+	// SelectedSenders bypasses SelectionPath when SelectionLimited is true.
+	// This lets interactive clients represent an explicit empty cohort.
+	SelectedSenders  map[string]struct{}
+	SelectionLimited bool
 
 	// stage-populated state, read by the CLI to render output.
 	scanned        int
@@ -102,15 +106,19 @@ func (p *Pipeline) loadPlan(pl *Pipeline) error {
 	if err != nil {
 		return err
 	}
-	selected, err := loadSelectedSenders(pl.SelectionPath)
-	if err != nil {
-		return err
+	selected := pl.SelectedSenders
+	if !pl.SelectionLimited {
+		selected, err = loadSelectedSenders(pl.SelectionPath)
+		if err != nil {
+			return err
+		}
 	}
 	decisions, rep := Plan(PlanInputs{
-		Messages:        classified,
-		Config:          pl.Rules,
-		Keep:            pl.Keep,
-		SelectedSenders: selected,
+		Messages:         classified,
+		Config:           pl.Rules,
+		Keep:             pl.Keep,
+		SelectedSenders:  selected,
+		SelectionLimited: pl.SelectionLimited,
 	})
 	for _, d := range decisions {
 		reasons := strings.Join(d.Reasons, ";")
@@ -186,6 +194,7 @@ func (p *Pipeline) applyTrash(pl *Pipeline) error {
 // Exported accessors for the CLI to render output after a run.
 func (p *Pipeline) Scanned() int                            { return p.scanned }
 func (p *Pipeline) Report() models.DryRunReport             { return p.report }
+func (p *Pipeline) Decisions() []models.Decision            { return p.decisions }
 func (p *Pipeline) TrashedIDs() []string                    { return p.trashedIDs }
 func (p *Pipeline) TrashedRecords() []storage.StoredMessage { return p.trashedRecords }
 

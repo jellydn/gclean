@@ -26,6 +26,10 @@ test-pkg pkg="internal/engine/":
 test-integration:
     go test -run TestScanCommand_DevFixturePipeline ./internal/cli/
 
+# Build unsigned portable desktop archives for macOS, Windows, and Linux.
+package-desktop:
+    ./scripts/package-desktop.sh
+
 # ── Linting ─────────────────────────────────────────────────────────────────
 
 lint-emails:

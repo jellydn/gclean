@@ -13,6 +13,11 @@ type PlanInputs struct {
 	Config          RuleConfig
 	Keep            KeepConfig
 	SelectedSenders map[string]struct{}
+	// SelectionLimited distinguishes an explicit empty selection (delete
+	// nothing) from no selection filter (consider every sender). CLI callers
+	// retain the historical unrestricted default; graphical callers can safely
+	// represent a user who unchecked every row.
+	SelectionLimited bool
 }
 
 // RuleConfig is the parsed, evaluator-ready form of the config file under
@@ -61,7 +66,7 @@ func Plan(in PlanInputs) ([]models.Decision, models.DryRunReport) {
 		m := c.Message
 		d := models.Decision{Message: m, Classified: c}
 
-		if len(in.SelectedSenders) > 0 {
+		if in.SelectionLimited || len(in.SelectedSenders) > 0 {
 			if _, selected := in.SelectedSenders[m.Sender.Email]; !selected {
 				d.Verdict = models.VerdictKeep
 				d.Reasons = append(d.Reasons, "selection_excluded")
