@@ -6,195 +6,212 @@ import (
 	"gclean/internal/storage"
 )
 
-// ReadBack is the narrow Gmail seam the reconcile core needs: after a
-// mutation fails partway, it asks Gmail what actually moved so local state
-// (SQLite + undo cache) can be trimmed to match. Only InTrash is required —
-// the mutation calls stay on the caller's client, so the reconcile core is
-// testable against a fake that implements nothing else.
-type ReadBack interface {
-	InTrash(ids []string) ([]string, error)
-}
-
-// Gmail is the mutation+read-back surface undo and purge need on top of
-// ReadBack. It is a strict subset of gmailclient.Client (no ListMessages),
-// so the engine stays free of the gmailclient import graph and the undo/purge
-// flows never reach for the full Client.
-type Gmail interface {
+// MutationClient is the engine's single Gmail mutation adapter. It combines
+// each state transition with the read-back operation the journal uses to
+// reconcile partial results.
+type MutationClient interface {
+	TrashMessages(ids []string) error
 	RestoreFromTrash(ids []string) ([]string, error)
 	EmptyTrash() error
 	InTrash(ids []string) ([]string, error)
 }
 
-// Reconciler owns "reconcile local state against what Gmail actually did
-// after a mutation" for clean, undo, and purge. Before this module the
-// concept lived in two packages with two shapes: the engine's reconcileTrash
-// (clean) and the CLI's undoWithReconcile / purgeWithReconcile (undo/purge),
-// which reached for the full 5-method Client. One home, one vocabulary; the
-// Gmail seam is passed per call so each method's dependency is explicit.
+// Mutation identifies the state transition a journal intent requests.
+type Mutation string
+
+const (
+	MutationTrash   Mutation = "trash"
+	MutationRestore Mutation = "restore"
+	MutationPurge   Mutation = "purge"
+)
+
+// Intent records the local cohort and transition that must stay consistent
+// with Gmail while a mutation is applied.
+type Intent struct {
+	Mutation Mutation
+	Records  []storage.StoredMessage
+}
+
+// Outcome is the journal's typed account of a mutation. Moved contains IDs
+// that crossed the Trash boundary, StillInTrash contains recoverable IDs,
+// and Gone contains IDs that Gmail no longer reports in Trash. MovedRecords
+// carries the corresponding local records for callers that render details.
+type Outcome struct {
+	Moved        []string
+	MovedRecords []storage.StoredMessage
+	StillInTrash []string
+	Gone         []string
+}
+
+// Reconciler is the mutation journal for clean, undo, and purge. Apply owns
+// the mutation/reconcile/local-state protocol so callers only describe an
+// intent, provide the Gmail mutation, and render its Outcome.
 type Reconciler struct {
-	// Store is the local SQLite store. Required by ReconcileTrash and Undo
-	// (store mark / re-insert); Purge does not touch the store, so it may
-	// leave Store nil.
 	Store     *storage.Store
 	CachePath string
 	Account   string
+	Client    MutationClient
 }
 
-// ReconcileTrash trims the undo cache and the local mark so they reflect only
-// the messages that actually reached Gmail's Trash after a partial failure.
-// It fails loudly if the cache cannot be rewritten, and returns the kept
-// records so the caller can render exactly what survived without recomputing
-// the subset.
-func (r *Reconciler) ReconcileTrash(records []storage.StoredMessage, trashed []string) ([]storage.StoredMessage, error) {
-	kept := storage.FilterRecords(records, trashed)
-	if r.CachePath != "" {
-		if err := storage.ReplaceOrRemoveUndoCacheForAccount(r.CachePath, r.Account, kept); err != nil {
-			return nil, err
-		}
+// Apply runs a Gmail mutation and journals its observed outcome into SQLite
+// and the undo cache. If Gmail applies only part of a mutation, Apply reads
+// server state back, commits exactly that subset locally, and returns both a
+// typed Outcome and an operation-specific partial-failure error.
+func (r *Reconciler) Apply(intent Intent, mutator func() error) (Outcome, error) {
+	switch intent.Mutation {
+	case MutationTrash:
+		return r.applyTrash(intent.Records, mutator)
+	case MutationRestore:
+		return r.applyRestore(intent.Records, mutator)
+	case MutationPurge:
+		return r.applyPurge(intent.Records, mutator)
+	default:
+		return Outcome{}, fmt.Errorf("unknown mutation %q", intent.Mutation)
 	}
-	return kept, r.Store.MarkTrashed(trashed)
 }
 
-// ReconcileTrashFailure reconciles a failed trash against Gmail's actual
-// state: it asks which ids reached Trash, trims the undo cache and the local
-// mark to match, and wraps the original failure with a named prefix. It
-// returns the ids actually in Trash and their records so the caller can
-// report partial progress.
-func (r *Reconciler) ReconcileTrashFailure(gmail ReadBack, records []storage.StoredMessage, ids []string, prefix string, cause error) ([]string, []storage.StoredMessage, error) {
-	trashed, inErr := gmail.InTrash(ids)
-	if inErr != nil {
-		return nil, nil, fmt.Errorf("%s: %w (reconcile failed: %v)", prefix, cause, inErr)
-	}
-	kept, err := r.ReconcileTrash(records, trashed)
-	if err != nil {
-		return nil, nil, fmt.Errorf("%s: %w (reconcile: %v)", prefix, cause, err)
-	}
-	return trashed, kept, nil
-}
-
-// Undo restores records from Trash, reconciling so the local store and undo
-// cache reflect Gmail's actual state. RestoreFromTrash returns the ids it
-// actually untrashed (404s — permanently deleted messages, e.g. the aftermath
-// of a partial purge — are skipped, not errors), so only those are
-// re-inserted; the cache is trimmed to what is still in Trash (or removed
-// entirely) so `gclean undo` can be retried and can never point at ghosts. It
-// returns the number of messages actually restored.
-func (r *Reconciler) Undo(gmail Gmail, records []storage.StoredMessage) (int, error) {
-	lock, records, err := r.lockAndLoad(records)
-	if err != nil {
-		return 0, err
-	}
-	defer func() { _ = lock.Unlock() }()
-	if err := r.Store.BindAccount(r.Account); err != nil {
-		return 0, err
-	}
+func (r *Reconciler) applyTrash(records []storage.StoredMessage, mutator func() error) (Outcome, error) {
 	ids := recordIDs(records)
-	restored, restoreErr := gmail.RestoreFromTrash(ids)
-	if restoreErr != nil {
-		// Reconcile a partial restore: re-insert what actually moved out of
-		// Trash before the failure, trim the cache to what is still in Trash
-		// so undo can retry, and drop ids in neither set (permanently
-		// deleted) without re-inserting them.
-		still, inErr := gmail.InTrash(ids)
-		if inErr != nil {
-			return 0, fmt.Errorf("restore: %w (reconcile failed: %v)", restoreErr, inErr)
+	cause := mutator()
+	if cause == nil {
+		if err := r.Store.MarkTrashed(ids); err == nil {
+			return outcomeFor(records, ids, ids, nil), nil
+		} else {
+			cause = err
 		}
-		if err := r.Store.RestoreTrashed(storage.FilterRecords(records, restored)); err != nil {
-			return 0, fmt.Errorf("restore: %w (reconcile re-insert failed: %v)", restoreErr, err)
-		}
-		if err := storage.ReplaceOrRemoveUndoCacheForAccount(r.CachePath, r.Account, storage.FilterRecords(records, still)); err != nil {
-			return 0, fmt.Errorf("restore: %w (reconcile cache rewrite failed: %v)", restoreErr, err)
-		}
-		if len(restored) == 0 {
-			return 0, fmt.Errorf("restore: no messages restored: %w", restoreErr)
-		}
-		return 0, fmt.Errorf("restore partially applied: %d of %d messages restored: %w", len(restored), len(ids), restoreErr)
 	}
-	// RestoreFromTrash succeeded: every id was either untrashed or 404
-	// (permanently deleted). Re-insert exactly the restored ones.
-	if err := r.Store.RestoreTrashed(storage.FilterRecords(records, restored)); err != nil {
-		// Gmail moved the messages but the local re-insert failed; reconcile
-		// the cache against what Gmail still reports in Trash.
-		still, inErr := gmail.InTrash(ids)
-		if inErr != nil {
-			return 0, fmt.Errorf("restore: %w (reconcile failed: %v)", err, inErr)
-		}
-		if rerr := storage.ReplaceOrRemoveUndoCacheForAccount(r.CachePath, r.Account, storage.FilterRecords(records, still)); rerr != nil {
-			return 0, fmt.Errorf("restore: %w (reconcile: %v)", err, rerr)
-		}
-		return 0, fmt.Errorf("restore: %w", err)
+
+	moved, err := r.inTrash(ids)
+	if err != nil {
+		return Outcome{}, fmt.Errorf("trash: %w (reconcile failed: %v)", cause, err)
 	}
-	// Nothing remains in Trash; a cache file with zero records would block a
-	// retried clean, so remove it rather than write an empty one.
-	if err := storage.ReplaceOrRemoveUndoCacheForAccount(r.CachePath, r.Account, nil); err != nil {
-		return 0, fmt.Errorf("restore: remove undo cache: %w", err)
+	outcome := outcomeFor(records, moved, moved, nil)
+	if err := r.commitTrash(records, moved); err != nil {
+		return outcome, fmt.Errorf("trash: %w (reconcile: %v)", cause, err)
 	}
-	return len(restored), nil
+	switch {
+	case len(moved) == 0:
+		return outcome, fmt.Errorf("trash: no messages moved to Trash: %w", cause)
+	case len(moved) < len(ids):
+		return outcome, fmt.Errorf("trash partially applied: %d of %d messages moved to Trash: %w", len(moved), len(ids), cause)
+	default:
+		return outcome, fmt.Errorf("trash: %w", cause)
+	}
 }
 
-// Purge empties Trash, keeping (and trimming) the undo cache to the messages
-// still in Trash on a partial failure so `gclean undo` can still recover
-// them. If the cohort is fully purged (InTrash finds nothing, e.g. the
-// failing page came after the gclean cohort was deleted), the stale cache is
-// removed so undo cannot point at permanently deleted IDs. A full success
-// also removes the cache.
-func (r *Reconciler) Purge(gmail Gmail, records []storage.StoredMessage) error {
-	lock, records, err := r.lockAndLoad(records)
+func (r *Reconciler) applyRestore(records []storage.StoredMessage, mutator func() error) (Outcome, error) {
+	ids := recordIDs(records)
+	before, err := r.inTrash(ids)
 	if err != nil {
-		return err
+		return Outcome{}, fmt.Errorf("restore: reconcile failed: %w", err)
 	}
-	defer func() { _ = lock.Unlock() }()
-	if err := gmail.EmptyTrash(); err != nil {
-		if len(records) > 0 {
-			still, inErr := gmail.InTrash(recordIDs(records))
-			if inErr != nil {
-				return fmt.Errorf("purge: %w (reconcile failed: %v)", err, inErr)
-			}
-			if len(still) > 0 {
-				if err2 := storage.ReplaceUndoCacheForAccount(r.CachePath, r.Account, storage.FilterRecords(records, still)); err2 != nil {
-					return fmt.Errorf("purge: %w (reconcile cache rewrite failed: %v)", err, err2)
-				}
-				return fmt.Errorf("purge partially applied: %d messages remain in Trash: %w", len(still), err)
-			}
-			if err2 := storage.ReplaceOrRemoveUndoCacheForAccount(r.CachePath, r.Account, nil); err2 != nil {
-				return fmt.Errorf("purge: %w (reconcile cache remove failed: %v)", err, err2)
-			}
+
+	cause := mutator()
+	still, err := r.inTrash(ids)
+	if err != nil {
+		if cause != nil {
+			return Outcome{}, fmt.Errorf("restore: %w (reconcile failed: %v)", cause, err)
 		}
-		return err
+		return Outcome{}, fmt.Errorf("restore: reconcile failed: %w", err)
 	}
-	// Full success: nothing left in Trash; remove the cache so undo cannot
-	// point at permanently deleted IDs.
-	if err := storage.ReplaceOrRemoveUndoCacheForAccount(r.CachePath, r.Account, nil); err != nil {
-		return fmt.Errorf("purge: remove undo cache: %w", err)
+	moved := difference(before, still)
+	gone := difference(ids, before)
+	outcome := outcomeFor(records, moved, still, gone)
+
+	if err := r.Store.RestoreTrashed(outcome.MovedRecords); err != nil {
+		if cacheErr := r.replaceCache(storage.FilterRecords(records, still)); cacheErr != nil {
+			return outcome, fmt.Errorf("restore: %w (reconcile: %v)", err, cacheErr)
+		}
+		return outcome, fmt.Errorf("restore: %w", err)
 	}
-	return nil
+	if err := r.replaceCache(storage.FilterRecords(records, still)); err != nil {
+		return outcome, fmt.Errorf("restore: reconcile cache rewrite failed: %w", err)
+	}
+	if cause == nil {
+		return outcome, nil
+	}
+	if len(moved) == 0 {
+		return outcome, fmt.Errorf("restore: no messages restored: %w", cause)
+	}
+	return outcome, fmt.Errorf("restore partially applied: %d of %d messages restored: %w", len(moved), len(ids), cause)
 }
 
-func (r *Reconciler) lockAndLoad(fallback []storage.StoredMessage) (*storage.MutationLock, []storage.StoredMessage, error) {
-	lock, err := storage.AcquireMutationLock(r.CachePath)
-	if err != nil {
-		return nil, nil, err
+func (r *Reconciler) applyPurge(records []storage.StoredMessage, mutator func() error) (Outcome, error) {
+	ids := recordIDs(records)
+	cause := mutator()
+	if cause == nil {
+		outcome := outcomeFor(records, nil, nil, ids)
+		if err := r.replaceCache(nil); err != nil {
+			return outcome, fmt.Errorf("purge: remove undo cache: %w", err)
+		}
+		return outcome, nil
 	}
+	if len(ids) == 0 {
+		return Outcome{}, cause
+	}
+
+	still, err := r.inTrash(ids)
+	if err != nil {
+		return Outcome{}, fmt.Errorf("purge: %w (reconcile failed: %v)", cause, err)
+	}
+	outcome := outcomeFor(records, nil, still, difference(ids, still))
+	if err := r.replaceCache(storage.FilterRecords(records, still)); err != nil {
+		return outcome, fmt.Errorf("purge: %w (reconcile cache rewrite failed: %v)", cause, err)
+	}
+	if len(still) > 0 {
+		return outcome, fmt.Errorf("purge partially applied: %d messages remain in Trash: %w", len(still), cause)
+	}
+	return outcome, cause
+}
+
+func (r *Reconciler) commitTrash(records []storage.StoredMessage, moved []string) error {
+	if err := r.replaceCache(storage.FilterRecords(records, moved)); err != nil {
+		return err
+	}
+	return r.Store.MarkTrashed(moved)
+}
+
+func (r *Reconciler) replaceCache(records []storage.StoredMessage) error {
 	if r.CachePath == "" {
-		return lock, fallback, nil
+		return nil
 	}
-	batch, err := storage.LoadUndoBatch(r.CachePath)
-	if err != nil {
-		_ = lock.Unlock()
-		return nil, nil, err
-	}
-	if err := storage.ValidateUndoAccount(r.CachePath, r.Account); err != nil {
-		_ = lock.Unlock()
-		return nil, nil, err
-	}
-	return lock, batch.Records, nil
+	return storage.ReplaceOrRemoveUndoCacheForAccount(r.CachePath, r.Account, records)
 }
 
-// recordIDs extracts the message IDs from undo-cache records.
+func (r *Reconciler) inTrash(ids []string) ([]string, error) {
+	if len(ids) == 0 {
+		return nil, nil
+	}
+	return r.Client.InTrash(ids)
+}
+
+func outcomeFor(records []storage.StoredMessage, moved, still, gone []string) Outcome {
+	return Outcome{
+		Moved:        moved,
+		MovedRecords: storage.FilterRecords(records, moved),
+		StillInTrash: still,
+		Gone:         gone,
+	}
+}
+
+func difference(ids, excluded []string) []string {
+	skip := make(map[string]struct{}, len(excluded))
+	for _, id := range excluded {
+		skip[id] = struct{}{}
+	}
+	out := make([]string, 0, len(ids))
+	for _, id := range ids {
+		if _, ok := skip[id]; !ok {
+			out = append(out, id)
+		}
+	}
+	return out
+}
+
 func recordIDs(records []storage.StoredMessage) []string {
 	ids := make([]string, 0, len(records))
-	for _, r := range records {
-		ids = append(ids, r.ID)
+	for _, record := range records {
+		ids = append(ids, record.ID)
 	}
 	return ids
 }

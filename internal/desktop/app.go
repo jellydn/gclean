@@ -678,7 +678,7 @@ func (a *App) scan(w http.ResponseWriter, r *http.Request) error {
 	if err != nil {
 		return err
 	}
-	p := &engine.Pipeline{Store: a.store, Client: client, Keep: compiled.Keep, Rules: compiled.Rules, Account: account, CachePath: a.cfg.CachePath}
+	p := &engine.Pipeline{Store: a.store, Reader: client, Keep: compiled.Keep, Rules: compiled.Rules, Account: account, CachePath: a.cfg.CachePath}
 	if err := p.Run(p.ScanStages()...); err != nil {
 		return err
 	}
@@ -741,7 +741,7 @@ func (a *App) trash(w http.ResponseWriter, r *http.Request) error {
 	if err != nil {
 		return err
 	}
-	p.Client = client
+	p.Mutations = client
 	p.Account = account
 	p.MutationLockHeld = true
 	if err := p.Run(p.ApplyStages()...); err != nil {
@@ -762,13 +762,6 @@ func (a *App) restore(w http.ResponseWriter, r *http.Request) error {
 		return &statusError{http.StatusConflict, "another operation is already running"}
 	}
 	defer a.operation.Unlock()
-	records, err := storage.LoadUndoCache(a.cfg.CachePath)
-	if err != nil {
-		return err
-	}
-	if len(records) == 0 {
-		return &statusError{http.StatusBadRequest, "there is no gclean batch to restore"}
-	}
 	client, err := a.getClient()
 	if err != nil {
 		return err
@@ -777,11 +770,37 @@ func (a *App) restore(w http.ResponseWriter, r *http.Request) error {
 	if err != nil {
 		return err
 	}
-	restored, err := (&engine.Reconciler{Store: a.store, CachePath: a.cfg.CachePath, Account: account}).Undo(client, records)
+	lock, err := storage.AcquireMutationLock(a.cfg.CachePath)
 	if err != nil {
 		return err
 	}
-	return writeJSON(w, http.StatusOK, actionResponse{Message: fmt.Sprintf("Restored %d messages from Trash.", restored), Count: restored})
+	defer func() { _ = lock.Unlock() }()
+	batch, err := storage.LoadUndoBatch(a.cfg.CachePath)
+	if err != nil {
+		return err
+	}
+	if len(batch.Records) == 0 {
+		return &statusError{http.StatusBadRequest, "there is no gclean batch to restore"}
+	}
+	if err := storage.ValidateUndoAccount(a.cfg.CachePath, account); err != nil {
+		return err
+	}
+	if err := a.store.BindAccount(account); err != nil {
+		return err
+	}
+	ids := make([]string, 0, len(batch.Records))
+	for _, record := range batch.Records {
+		ids = append(ids, record.ID)
+	}
+	journal := engine.Reconciler{Store: a.store, CachePath: a.cfg.CachePath, Account: account, Client: client}
+	outcome, err := journal.Apply(engine.Intent{Mutation: engine.MutationRestore, Records: batch.Records}, func() error {
+		_, restoreErr := client.RestoreFromTrash(ids)
+		return restoreErr
+	})
+	if err != nil {
+		return err
+	}
+	return writeJSON(w, http.StatusOK, actionResponse{Message: fmt.Sprintf("Restored %d messages from Trash.", len(outcome.Moved)), Count: len(outcome.Moved)})
 }
 
 func (a *App) purge(w http.ResponseWriter, r *http.Request) error {
@@ -799,10 +818,6 @@ func (a *App) purge(w http.ResponseWriter, r *http.Request) error {
 		return &statusError{http.StatusConflict, "another operation is already running"}
 	}
 	defer a.operation.Unlock()
-	records, err := storage.LoadUndoCache(a.cfg.CachePath)
-	if err != nil {
-		return err
-	}
 	client, err := a.getClient()
 	if err != nil {
 		return err
@@ -811,7 +826,20 @@ func (a *App) purge(w http.ResponseWriter, r *http.Request) error {
 	if err != nil {
 		return err
 	}
-	if err := (&engine.Reconciler{CachePath: a.cfg.CachePath, Account: account}).Purge(client, records); err != nil {
+	lock, err := storage.AcquireMutationLock(a.cfg.CachePath)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = lock.Unlock() }()
+	batch, err := storage.LoadUndoBatch(a.cfg.CachePath)
+	if err != nil {
+		return err
+	}
+	if err := storage.ValidateUndoAccount(a.cfg.CachePath, account); err != nil {
+		return err
+	}
+	journal := engine.Reconciler{CachePath: a.cfg.CachePath, Account: account, Client: client}
+	if _, err := journal.Apply(engine.Intent{Mutation: engine.MutationPurge, Records: batch.Records}, client.EmptyTrash); err != nil {
 		return err
 	}
 	return writeJSON(w, http.StatusOK, actionResponse{Message: "Gmail Trash was emptied permanently. This cannot be undone."})

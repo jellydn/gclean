@@ -68,31 +68,15 @@ func (s *Store) Close() error { return s.db.Close() }
 
 // Upsert writes or updates a stored message row keyed by ID.
 func (s *Store) Upsert(m StoredMessage) error {
-	_, err := s.db.Exec(`
-INSERT INTO messages(
-    id, thread_id, sender_email, sender_name, is_contact, subject, date,
-    size, labels, headers, junk_reason, is_junk, protected, verdict, verdict_reasons
-) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
-ON CONFLICT(id) DO UPDATE SET
-    thread_id=excluded.thread_id,
-    sender_email=excluded.sender_email,
-    sender_name=excluded.sender_name,
-    is_contact=excluded.is_contact,
-    subject=excluded.subject,
-    date=excluded.date,
-    size=excluded.size,
-    labels=excluded.labels,
-    headers=excluded.headers,
-    junk_reason=excluded.junk_reason,
-    is_junk=excluded.is_junk,
-    protected=excluded.protected,
-    verdict=excluded.verdict,
-    verdict_reasons=excluded.verdict_reasons`,
-		m.ID, m.ThreadID, m.SenderEmail, m.SenderName, boolInt(m.IsContact),
-		m.Subject, m.Date, m.Size, m.Labels, m.Headers, m.JunkReason,
-		boolInt(m.IsJunk), boolInt(m.Protected), m.Verdict, m.VerdictReasons,
-	)
-	return err
+	tx, err := s.db.Begin()
+	if err != nil {
+		return err
+	}
+	if err := upsertMsg(tx, m); err != nil {
+		_ = tx.Rollback()
+		return err
+	}
+	return tx.Commit()
 }
 
 // BindAccount records which Gmail account owns this database and refuses to
@@ -141,7 +125,7 @@ func (s *Store) ReplaceAll(messages []StoredMessage) error {
 		return err
 	}
 	for _, message := range messages {
-		if err := s.upsertTx(tx, message); err != nil {
+		if err := upsertMsg(tx, message); err != nil {
 			return err
 		}
 	}
@@ -264,7 +248,7 @@ func (s *Store) RestoreTrashed(restored []StoredMessage) error {
 		return err
 	}
 	for _, m := range restored {
-		if err := s.upsertTx(tx, m); err != nil {
+		if err := upsertMsg(tx, m); err != nil {
 			_ = tx.Rollback()
 			return err
 		}
@@ -272,7 +256,7 @@ func (s *Store) RestoreTrashed(restored []StoredMessage) error {
 	return tx.Commit()
 }
 
-func (s *Store) upsertTx(tx *sql.Tx, m StoredMessage) error {
+func upsertMsg(tx *sql.Tx, m StoredMessage) error {
 	_, err := tx.Exec(`
 INSERT INTO messages(id, thread_id, sender_email, sender_name, is_contact, subject, date, size, labels, headers, junk_reason, is_junk, protected, verdict, verdict_reasons)
 VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
@@ -287,10 +271,7 @@ ON CONFLICT(id) DO UPDATE SET
     labels=excluded.labels,
     headers=excluded.headers,
     junk_reason=excluded.junk_reason,
-    is_junk=excluded.is_junk,
-    protected=excluded.protected,
-    verdict=excluded.verdict,
-    verdict_reasons=excluded.verdict_reasons`,
+    is_junk=excluded.is_junk`,
 		m.ID, m.ThreadID, m.SenderEmail, m.SenderName, boolInt(m.IsContact),
 		m.Subject, m.Date, m.Size, m.Labels, m.Headers, m.JunkReason,
 		boolInt(m.IsJunk), boolInt(m.Protected), m.Verdict, m.VerdictReasons,

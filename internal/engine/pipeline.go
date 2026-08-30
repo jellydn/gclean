@@ -19,10 +19,11 @@ import (
 // It does no env/path/file discovery itself — the CLI owns that so the
 // engine stays deterministic and pure (its documented invariant).
 type Pipeline struct {
-	Store  *storage.Store
-	Client Gmailer
-	Keep   KeepConfig
-	Rules  RuleConfig
+	Store     *storage.Store
+	Reader    MessageReader
+	Mutations MutationClient
+	Keep      KeepConfig
+	Rules     RuleConfig
 	// CachePath is the undo-cache file the Apply stage writes to. Empty
 	// disables caching (some callers, e.g. dry-run, don't trash).
 	CachePath     string
@@ -45,13 +46,10 @@ type Pipeline struct {
 	trashedRecords []storage.StoredMessage
 }
 
-// Gmailer is the subset of gmailclient.Client the pipeline needs. Declaring
-// it here keeps the engine package free of the gmailclient import graph and
-// makes the stage boundary explicit.
-type Gmailer interface {
+// MessageReader is the non-mutating Gmail scan seam. Mutation commands use
+// MutationClient, keeping the read and mutation adapters non-overlapping.
+type MessageReader interface {
 	ListMessages(query string, max int) ([]*models.Message, error)
-	TrashMessages(ids []string) error
-	InTrash(ids []string) ([]string, error)
 }
 
 // Stage is one step of the pipeline. Each stage mutates the shared Pipeline
@@ -99,7 +97,7 @@ func (p *Pipeline) fetchAndClassify(pl *Pipeline) error {
 	if err := pl.Store.BindAccount(pl.Account); err != nil {
 		return err
 	}
-	msgs, err := pl.Client.ListMessages("", 0)
+	msgs, err := pl.Reader.ListMessages("", 0)
 	if err != nil {
 		return fmt.Errorf("list messages: %w", err)
 	}
@@ -147,9 +145,8 @@ func (p *Pipeline) loadPlan(pl *Pipeline) error {
 }
 
 // applyTrash moves the delete cohort to Trash and stashes the originals for
-// undo. It is the ONLY stage that performs Gmail mutation. Reconcile-after-
-// failure lives in Reconciler; this stage builds one from the pipeline's
-// local-state dependencies and reports the trashed subset back onto the
+// undo. It is the ONLY stage that performs Gmail mutation. The mutation
+// journal owns reconciliation and reports the observed subset back onto the
 // pipeline state for the CLI to render.
 func (p *Pipeline) applyTrash(pl *Pipeline) error {
 	if err := pl.Store.BindAccount(pl.Account); err != nil {
@@ -181,41 +178,13 @@ func (p *Pipeline) applyTrash(pl *Pipeline) error {
 			return fmt.Errorf("save undo cache: %w", err)
 		}
 	}
-	rc := &Reconciler{Store: pl.Store, CachePath: pl.CachePath, Account: pl.Account}
-	trashErr := pl.Client.TrashMessages(ids)
-	if trashErr != nil {
-		// Reconcile a partial failure: find which messages actually made it
-		// to Trash server-side, trim the undo cache and the local mark to
-		// match, then fail loudly so the user knows the operation was
-		// partial. Without this, Gmail state and local state silently drift.
-		trashed, kept, rerr := rc.ReconcileTrashFailure(pl.Client, toTrash, ids, "trash", trashErr)
-		if rerr != nil {
-			return rerr
-		}
-		pl.trashedIDs, pl.trashedRecords = trashed, kept
-		switch {
-		case len(trashed) == 0:
-			return fmt.Errorf("trash: no messages moved to Trash: %w", trashErr)
-		case len(trashed) < len(ids):
-			return fmt.Errorf("trash partially applied: %d of %d messages moved to Trash: %w", len(trashed), len(ids), trashErr)
-		default:
-			return fmt.Errorf("trash: %w", trashErr)
-		}
-	}
-	if err := pl.Store.MarkTrashed(ids); err != nil {
-		// Gmail moved the cohort but the local mark failed; reconcile against
-		// Gmail's actual state so the store rows and undo cache don't drift
-		// (retry would otherwise die on the existing undo cache).
-		trashed, kept, rerr := rc.ReconcileTrashFailure(pl.Client, toTrash, ids, "mark trashed", err)
-		if rerr != nil {
-			return rerr
-		}
-		pl.trashedIDs, pl.trashedRecords = trashed, kept
-		return fmt.Errorf("mark trashed: %w", err)
-	}
-	pl.trashedIDs = ids
-	pl.trashedRecords = toTrash
-	return nil
+	journal := &Reconciler{Store: pl.Store, CachePath: pl.CachePath, Account: pl.Account, Client: pl.Mutations}
+	outcome, err := journal.Apply(Intent{Mutation: MutationTrash, Records: toTrash}, func() error {
+		return pl.Mutations.TrashMessages(ids)
+	})
+	pl.trashedIDs = outcome.Moved
+	pl.trashedRecords = outcome.MovedRecords
+	return err
 }
 
 // Exported accessors for the CLI to render output after a run.

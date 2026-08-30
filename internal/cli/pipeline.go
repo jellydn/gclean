@@ -30,14 +30,15 @@ import (
 
 // buildPipeline wires an engine.Pipeline from already-resolved CLI inputs.
 // The caller owns store open/close and client/cache resolution.
-func buildPipeline(store *storage.Store, client engine.Gmailer, doc config.Document, cachePath string) (engine.Pipeline, error) {
+func buildPipeline(store *storage.Store, client gmailclient.Client, doc config.Document, cachePath string) (engine.Pipeline, error) {
 	cc, err := doc.CompileFull()
 	if err != nil {
 		return engine.Pipeline{}, err
 	}
 	return engine.Pipeline{
 		Store:         store,
-		Client:        client,
+		Reader:        client,
+		Mutations:     client,
 		Keep:          cc.Keep,
 		Rules:         cc.Rules,
 		CachePath:     cachePath,
@@ -273,8 +274,10 @@ func newPurgeCmd(out, errOut io.Writer) *cobra.Command {
 			if fixtures == "" && !gmailclient.PurgeAuthorized() {
 				return errors.New("permanent deletion is not authorized; run `gclean login --allow-permanent-delete` first")
 			}
-			cache, _ := defaultCache()
-			records, _ := storage.LoadUndoCache(cache) // best-effort; may be absent
+			cache, err := defaultCache()
+			if err != nil {
+				return err
+			}
 			client, err := resolveClient(fixtures, credentialsPath())
 			if err != nil {
 				return err
@@ -283,8 +286,20 @@ func newPurgeCmd(out, errOut io.Writer) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			rc := engine.Reconciler{CachePath: cache, Account: account}
-			if err := rc.Purge(client, records); err != nil {
+			lock, err := storage.AcquireMutationLock(cache)
+			if err != nil {
+				return err
+			}
+			defer func() { _ = lock.Unlock() }()
+			batch, err := storage.LoadUndoBatch(cache)
+			if err != nil {
+				return err
+			}
+			if err := storage.ValidateUndoAccount(cache, account); err != nil {
+				return err
+			}
+			journal := engine.Reconciler{CachePath: cache, Account: account, Client: client}
+			if _, err := journal.Apply(engine.Intent{Mutation: engine.MutationPurge, Records: batch.Records}, client.EmptyTrash); err != nil {
 				return err
 			}
 			_, _ = fmt.Fprintln(out, "Trash emptied. Storage reclaimed from Gmail's side.")
@@ -306,11 +321,16 @@ func newUndoCmd(out, errOut io.Writer) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			records, err := storage.LoadUndoCache(cache)
+			lock, err := storage.AcquireMutationLock(cache)
 			if err != nil {
 				return err
 			}
-			if len(records) == 0 {
+			defer func() { _ = lock.Unlock() }()
+			batch, err := storage.LoadUndoBatch(cache)
+			if err != nil {
+				return err
+			}
+			if len(batch.Records) == 0 {
 				_, _ = fmt.Fprintln(out, "Nothing to undo.")
 				return nil
 			}
@@ -322,17 +342,30 @@ func newUndoCmd(out, errOut io.Writer) *cobra.Command {
 			if err != nil {
 				return err
 			}
+			if err := storage.ValidateUndoAccount(cache, account); err != nil {
+				return err
+			}
 			store, err := storage.Open(storePath())
 			if err != nil {
 				return err
 			}
 			defer func() { _ = store.Close() }()
-			rc := engine.Reconciler{Store: store, CachePath: cache, Account: account}
-			restored, err := rc.Undo(client, records)
+			if err := store.BindAccount(account); err != nil {
+				return err
+			}
+			ids := make([]string, 0, len(batch.Records))
+			for _, record := range batch.Records {
+				ids = append(ids, record.ID)
+			}
+			journal := engine.Reconciler{Store: store, CachePath: cache, Account: account, Client: client}
+			outcome, err := journal.Apply(engine.Intent{Mutation: engine.MutationRestore, Records: batch.Records}, func() error {
+				_, err := client.RestoreFromTrash(ids)
+				return err
+			})
 			if err != nil {
 				return err
 			}
-			_, _ = fmt.Fprintf(out, "Restored %d messages from Trash.\n", restored)
+			_, _ = fmt.Fprintf(out, "Restored %d messages from Trash.\n", len(outcome.Moved))
 			return nil
 		},
 	}

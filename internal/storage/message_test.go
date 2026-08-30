@@ -73,3 +73,36 @@ func TestFromClassified_SurvivesEmptySlices(t *testing.T) {
 		t.Fatalf("empty headers should still serialize to JSON, got empty string")
 	}
 }
+
+func TestUpsertConflictPreservesPlannerVerdict(t *testing.T) {
+	store, err := Open(t.TempDir() + "/gclean.db")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = store.Close() }()
+
+	message := StoredMessage{ID: "m1", Subject: "before", Verdict: int(models.VerdictKeep)}
+	if err := store.Upsert(message); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SetVerdict("m1", int(models.VerdictProtected), "protect:contact", true); err != nil {
+		t.Fatal(err)
+	}
+
+	message.Subject = "after"
+	if err := store.Upsert(message); err != nil {
+		t.Fatal(err)
+	}
+
+	var subject, reasons string
+	var verdict, protected int
+	if err := store.db.QueryRow(`SELECT subject, verdict, verdict_reasons, protected FROM messages WHERE id=?`, "m1").Scan(&subject, &verdict, &reasons, &protected); err != nil {
+		t.Fatal(err)
+	}
+	if subject != "after" {
+		t.Fatalf("subject = %q, want refreshed metadata", subject)
+	}
+	if verdict != int(models.VerdictProtected) || reasons != "protect:contact" || protected != 1 {
+		t.Fatalf("planner stamp = (%d, %q, %d), want protected verdict preserved", verdict, reasons, protected)
+	}
+}

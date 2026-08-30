@@ -38,7 +38,7 @@ lint-emails:
 lint: lint-emails
     go vet ./...
     go build ./...
-    command -v golangci-lint >/dev/null 2>&1 && golangci-lint run ./... || echo "  (golangci-lint not installed — skipping)"
+    if command -v golangci-lint >/dev/null 2>&1; then golangci-lint run ./...; else echo "  (golangci-lint not installed — skipping)"; fi
 
 # ── E2E dev flow (uses --fixtures) ──────────────────────────────────────────
 
