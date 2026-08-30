@@ -688,7 +688,7 @@ func TestUndo_PartialRestoreReconciles(t *testing.T) {
 	client.FailRestore = true
 	client.FailRestoreAfter = 1 // restores the first id, then fails
 
-	journal := engine.Reconciler{Store: store, CachePath: cachePath, ReadBack: client}
+	journal := engine.Reconciler{Store: store, CachePath: cachePath, Client: client}
 	_, err = journal.Apply(engine.Intent{Mutation: engine.MutationRestore, Records: records}, func() error {
 		_, err := client.RestoreFromTrash([]string{"m1", "m2"})
 		return err
@@ -748,7 +748,7 @@ func TestUndo_AfterPartialPurgeSkipsDeletedRestoresSurvivors(t *testing.T) {
 	}
 	client.Delete([]string{"m1"})
 
-	journal := engine.Reconciler{Store: store, CachePath: cachePath, ReadBack: client}
+	journal := engine.Reconciler{Store: store, CachePath: cachePath, Client: client}
 	if _, err := journal.Apply(engine.Intent{Mutation: engine.MutationRestore, Records: records}, func() error {
 		_, err := client.RestoreFromTrash([]string{"m1", "m2"})
 		return err
@@ -789,7 +789,7 @@ func TestPurge_PartialEmptyReconciles(t *testing.T) {
 	client.FailEmpty = true
 	client.FailEmptyKeep = map[string]bool{"m2": true} // m1 purged, m2 still in Trash
 
-	journal := engine.Reconciler{CachePath: cachePath, ReadBack: client}
+	journal := engine.Reconciler{CachePath: cachePath, Client: client}
 	_, err := journal.Apply(engine.Intent{Mutation: engine.MutationPurge, Records: records}, client.EmptyTrash)
 	if err == nil || !strings.Contains(err.Error(), "partially applied") {
 		t.Fatalf("want partial-purge error, got %v", err)
@@ -878,7 +878,7 @@ func TestPurge_AllRecordsPurgedRemovesCache(t *testing.T) {
 	client.FailEmpty = true
 	client.FailEmptyKeep = map[string]bool{} // everything purged, but EmptyTrash failed on a later page
 
-	journal := engine.Reconciler{CachePath: cachePath, ReadBack: client}
+	journal := engine.Reconciler{CachePath: cachePath, Client: client}
 	_, err := journal.Apply(engine.Intent{Mutation: engine.MutationPurge, Records: records}, client.EmptyTrash)
 	if err == nil {
 		t.Fatalf("want purge error, got nil")

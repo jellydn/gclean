@@ -6,9 +6,13 @@ import (
 	"gclean/internal/storage"
 )
 
-// ReadBack is the Gmail source of truth the mutation journal consults after
-// partial mutations.
-type ReadBack interface {
+// MutationClient is the engine's single Gmail mutation adapter. It combines
+// each state transition with the read-back operation the journal uses to
+// reconcile partial results.
+type MutationClient interface {
+	TrashMessages(ids []string) error
+	RestoreFromTrash(ids []string) ([]string, error)
+	EmptyTrash() error
 	InTrash(ids []string) ([]string, error)
 }
 
@@ -45,7 +49,7 @@ type Outcome struct {
 type Reconciler struct {
 	Store     *storage.Store
 	CachePath string
-	ReadBack  ReadBack
+	Client    MutationClient
 }
 
 // Apply runs a Gmail mutation and journals its observed outcome into SQLite
@@ -177,7 +181,7 @@ func (r *Reconciler) inTrash(ids []string) ([]string, error) {
 	if len(ids) == 0 {
 		return nil, nil
 	}
-	return r.ReadBack.InTrash(ids)
+	return r.Client.InTrash(ids)
 }
 
 func outcomeFor(records []storage.StoredMessage, moved, still, gone []string) Outcome {

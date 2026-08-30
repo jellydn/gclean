@@ -19,10 +19,11 @@ import (
 // It does no env/path/file discovery itself — the CLI owns that so the
 // engine stays deterministic and pure (its documented invariant).
 type Pipeline struct {
-	Store  *storage.Store
-	Client Gmailer
-	Keep   KeepConfig
-	Rules  RuleConfig
+	Store     *storage.Store
+	Reader    MessageReader
+	Mutations MutationClient
+	Keep      KeepConfig
+	Rules     RuleConfig
 	// CachePath is the undo-cache file the Apply stage writes to. Empty
 	// disables caching (some callers, e.g. dry-run, don't trash).
 	CachePath     string
@@ -36,13 +37,10 @@ type Pipeline struct {
 	trashedRecords []storage.StoredMessage
 }
 
-// Gmailer is the subset of gmailclient.Client the pipeline needs. Declaring
-// it here keeps the engine package free of the gmailclient import graph and
-// makes the stage boundary explicit.
-type Gmailer interface {
+// MessageReader is the non-mutating Gmail scan seam. Mutation commands use
+// MutationClient, keeping the read and mutation adapters non-overlapping.
+type MessageReader interface {
 	ListMessages(query string, max int) ([]*models.Message, error)
-	TrashMessages(ids []string) error
-	InTrash(ids []string) ([]string, error)
 }
 
 // Stage is one step of the pipeline. Each stage mutates the shared Pipeline
@@ -82,7 +80,7 @@ func (p *Pipeline) ApplyStages() []Stage {
 
 // fetchAndClassify pulls messages, classifies each, and upserts to SQLite.
 func (p *Pipeline) fetchAndClassify(pl *Pipeline) error {
-	msgs, err := pl.Client.ListMessages("", 0)
+	msgs, err := pl.Reader.ListMessages("", 0)
 	if err != nil {
 		return fmt.Errorf("list messages: %w", err)
 	}
@@ -145,9 +143,9 @@ func (p *Pipeline) applyTrash(pl *Pipeline) error {
 			return fmt.Errorf("save undo cache: %w", err)
 		}
 	}
-	journal := &Reconciler{Store: pl.Store, CachePath: pl.CachePath, ReadBack: pl.Client}
+	journal := &Reconciler{Store: pl.Store, CachePath: pl.CachePath, Client: pl.Mutations}
 	outcome, err := journal.Apply(Intent{Mutation: MutationTrash, Records: toTrash}, func() error {
-		return pl.Client.TrashMessages(ids)
+		return pl.Mutations.TrashMessages(ids)
 	})
 	pl.trashedIDs = outcome.Moved
 	pl.trashedRecords = outcome.MovedRecords
