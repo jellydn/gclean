@@ -9,9 +9,15 @@ import (
 	"gclean/internal/storage"
 )
 
-type journalReadBack map[string]bool
+type journalClient map[string]bool
 
-func (state journalReadBack) InTrash(ids []string) ([]string, error) {
+func (state journalClient) TrashMessages(ids []string) error { return nil }
+
+func (state journalClient) RestoreFromTrash(ids []string) ([]string, error) { return ids, nil }
+
+func (state journalClient) EmptyTrash() error { return nil }
+
+func (state journalClient) InTrash(ids []string) ([]string, error) {
 	trashed := make([]string, 0, len(ids))
 	for _, id := range ids {
 		if state[id] {
@@ -38,8 +44,8 @@ func TestMutationJournalApplyReportsAndCommitsPartialTrash(t *testing.T) {
 	if err := storage.SaveUndoCache(cachePath, records); err != nil {
 		t.Fatal(err)
 	}
-	serverState := journalReadBack{}
-	journal := Reconciler{Store: store, CachePath: cachePath, ReadBack: serverState}
+	serverState := journalClient{}
+	journal := Reconciler{Store: store, CachePath: cachePath, Client: serverState}
 
 	outcome, err := journal.Apply(Intent{Mutation: MutationTrash, Records: records}, func() error {
 		serverState["m1"] = true

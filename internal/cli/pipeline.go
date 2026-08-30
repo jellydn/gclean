@@ -14,6 +14,7 @@ import (
 	"gclean/internal/config"
 	"gclean/internal/engine"
 	"gclean/internal/format"
+	"gclean/internal/gmailclient"
 	"gclean/internal/storage"
 )
 
@@ -29,14 +30,15 @@ import (
 
 // buildPipeline wires an engine.Pipeline from already-resolved CLI inputs.
 // The caller owns store open/close and client/cache resolution.
-func buildPipeline(store *storage.Store, client engine.Gmailer, doc config.Document, cachePath string) (engine.Pipeline, error) {
+func buildPipeline(store *storage.Store, client gmailclient.Client, doc config.Document, cachePath string) (engine.Pipeline, error) {
 	cc, err := doc.CompileFull()
 	if err != nil {
 		return engine.Pipeline{}, err
 	}
 	return engine.Pipeline{
 		Store:         store,
-		Client:        client,
+		Reader:        client,
+		Mutations:     client,
 		Keep:          cc.Keep,
 		Rules:         cc.Rules,
 		CachePath:     cachePath,
@@ -258,7 +260,7 @@ func newPurgeCmd(out, errOut io.Writer) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			journal := engine.Reconciler{CachePath: cache, ReadBack: client}
+			journal := engine.Reconciler{CachePath: cache, Client: client}
 			if _, err := journal.Apply(engine.Intent{Mutation: engine.MutationPurge, Records: records}, client.EmptyTrash); err != nil {
 				return err
 			}
@@ -302,7 +304,7 @@ func newUndoCmd(out, errOut io.Writer) *cobra.Command {
 			for _, record := range records {
 				ids = append(ids, record.ID)
 			}
-			journal := engine.Reconciler{Store: store, CachePath: cache, ReadBack: client}
+			journal := engine.Reconciler{Store: store, CachePath: cache, Client: client}
 			outcome, err := journal.Apply(engine.Intent{Mutation: engine.MutationRestore, Records: records}, func() error {
 				_, err := client.RestoreFromTrash(ids)
 				return err
