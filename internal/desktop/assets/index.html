@@ -15,6 +15,7 @@
         <a href="#overview" class="active"><span>01</span> Overview</a>
         <a href="#review"><span>02</span> Review</a>
         <a href="#safety"><span>03</span> Safety</a>
+        <a href="#settings"><span>04</span> Settings</a>
       </nav>
       <div class="privacy"><span class="shield">◇</span><div><strong>Metadata only</strong><small>Message bodies never leave Gmail.</small></div></div>
     </aside>
@@ -26,7 +27,7 @@
 
       <section id="setup" class="setup hidden" aria-live="polite">
         <div><p class="eyebrow">ONE-TIME SETUP</p><h2>Connect your Gmail account</h2><p>gclean uses a Desktop OAuth client and requests only permission to read metadata and move messages to or from Trash.</p></div>
-        <ol><li>Enable the Gmail API in Google Cloud Console.</li><li>Create an OAuth client with application type <b>Desktop app</b>.</li><li>Save the download as <code id="credentials-path">~/.config/gclean/credentials.json</code>.</li></ol>
+        <ol><li>Enable the Gmail API in Google Cloud Console.</li><li>Create an OAuth client with application type <b>Desktop app</b>.</li><li>Choose the downloaded file in <a href="#settings">Settings</a>. Its contents stay local.</li></ol>
         <button id="login">Connect with Google <span>↗</span></button>
         <a id="auth-link" class="hidden" target="_blank" rel="noopener">Open Google authorization</a>
       </section>
@@ -58,6 +59,55 @@
         <div><p class="eyebrow">RECOVERY</p><h2>Changed your mind?</h2><p id="undo-copy">No gclean batch is currently waiting in Trash.</p></div>
         <button id="restore" class="secondary" disabled>Restore last batch</button>
         <div class="purge-zone"><div><b>Permanent cleanup</b><p>Emptying all Gmail Trash is intentionally disabled by default.</p></div><button id="open-purge" class="text-button" disabled>Empty Trash…</button></div>
+      </section>
+
+      <section id="settings" class="settings">
+        <div class="section-head"><div><p class="eyebrow">MAKE IT YOURS</p><h2>Settings</h2><p>Safe cleanup defaults are shared with the CLI through <code>config.yaml</code>. Changes apply to the next preview immediately.</p></div><span id="settings-status" class="save-status" role="status" aria-live="polite"></span></div>
+        <div class="settings-grid">
+          <form id="settings-form" class="settings-card">
+            <div class="card-heading"><div><p class="eyebrow">PROTECTION</p><h3>Always keep</h3></div><span class="badge safe">Recommended</span></div>
+            <p class="field-copy">These protections run before cleanup rules. Turning one off can expose more mail in the preview, but never bypasses review and confirmation.</p>
+            <fieldset class="toggle-grid">
+              <legend class="sr-only">Message protection settings</legend>
+              <label class="toggle"><input id="keep-contacts" type="checkbox"><span></span><b>Known contacts<small>Keep messages from Google Contacts.</small></b></label>
+              <label class="toggle"><input id="keep-replied" type="checkbox"><span></span><b>Replied conversations<small>Keep mail in threads you answered.</small></b></label>
+              <label class="toggle"><input id="keep-starred" type="checkbox"><span></span><b>Starred mail<small>Respect Gmail's Starred label.</small></b></label>
+              <label class="toggle"><input id="keep-important" type="checkbox"><span></span><b>Important mail<small>Respect Gmail's Important label.</small></b></label>
+              <label class="toggle"><input id="keep-sent" type="checkbox"><span></span><b>Mail you sent<small>Keep messages carrying the Sent label.</small></b></label>
+            </fieldset>
+            <label class="number-field" for="recent-days"><span><b>Protect recent mail</b><small>Keep all mail newer than this many days. Set 0 to disable only this protection.</small></span><span><input id="recent-days" type="number" min="0" max="3650" required inputmode="numeric"><i>days</i></span></label>
+            <details class="advanced-settings">
+              <summary>Advanced cleanup rules <span>⌄</span></summary>
+              <div class="rule-warning"><b>Preview still comes first</b><span>Changing rules can add cleanup candidates. gclean never applies a new rule without a fresh preview and typed confirmation.</span></div>
+              <label for="delete-rules"><b>Move-to-Trash rules</b><small>One rule per line. Matching junk is eligible for the cleanup preview.</small><textarea id="delete-rules" rows="5" spellcheck="false"></textarea></label>
+              <label for="archive-rules"><b>Archive rules</b><small>One rule per line. Archive planning remains available to the CLI; the desktop never silently archives.</small><textarea id="archive-rules" rows="3" spellcheck="false"></textarea></label>
+              <label for="ignored-domains"><b>Protected domains</b><small>One domain per line. Mail from these domains is excluded from cleanup.</small><textarea id="ignored-domains" rows="3" spellcheck="false"></textarea></label>
+              <p class="rule-help">Rule format: <code>key:value key:value</code>. Supported keys: <code>has</code>, <code>subject</code>, <code>category</code>, <code>from</code>, <code>older_than</code>, and <code>larger_than</code>.</p>
+            </details>
+            <div class="settings-actions"><button id="reset-settings" type="button" class="secondary">Reset defaults</button><button type="submit">Save cleanup settings</button></div>
+          </form>
+
+          <section class="settings-card oauth-card" aria-labelledby="oauth-title">
+            <div class="card-heading"><div><p class="eyebrow">GOOGLE OAUTH</p><h3 id="oauth-title">Account connection</h3></div><span id="oauth-badge" class="badge">Checking…</span></div>
+            <p class="field-copy">gclean requests Gmail metadata and modify access for scan, Trash, and restore. Credentials and tokens stay on this computer and their contents are never shown here.</p>
+            <ol class="oauth-steps"><li><span>1</span><div><b>Google Cloud project</b><small>Enable the Gmail API and configure the OAuth consent screen.</small></div></li><li><span>2</span><div><b>Desktop app credentials</b><small>Create an OAuth client with application type “Desktop app,” then download its JSON file.</small></div></li><li><span>3</span><div><b>Connect safely</b><small>Choose the file below, then authorize gclean in your browser.</small></div></li></ol>
+            <div class="credential-row"><div><b>OAuth credentials</b><small id="credential-copy">No file configured</small></div><label class="file-button">Choose JSON<input id="credentials-file" type="file" accept="application/json,.json"></label></div>
+            <div class="oauth-actions"><button id="settings-connect" type="button">Connect / reconnect</button><button id="disconnect" type="button" class="secondary">Disconnect</button></div>
+            <p class="requirement"><span>↻</span><span><b>Re-authentication</b> is required after replacing credentials. Disconnect removes only the local token; it does not revoke access in Google Account settings.</span></p>
+          </section>
+
+          <section class="settings-card paths-card" aria-labelledby="paths-title">
+            <div class="card-heading"><div><p class="eyebrow">LOCAL DATA</p><h3 id="paths-title">Files and overrides</h3></div><span class="badge">Private to this computer</span></div>
+            <p class="field-copy">Paths are resolved at startup from cross-platform defaults or environment variables. Change an override before launching gclean, then restart the desktop app.</p>
+            <dl id="settings-paths" class="path-list"></dl>
+          </section>
+
+          <section class="settings-card destructive-card" aria-labelledby="permanent-title">
+            <div class="card-heading"><div><p class="eyebrow">PERMANENT DELETION</p><h3 id="permanent-title">Empty Trash capability</h3></div><span id="purge-badge" class="badge danger-badge">Disabled</span></div>
+            <p>Permanent deletion is never enabled by a saved setting. It requires a separate full-access OAuth login and the <code>desktop --allow-purge</code> startup flag. Empty Trash deletes <strong>all Gmail Trash</strong>, including messages not moved by gclean, and cannot be undone.</p>
+            <div class="command-hint"><code>gclean login --allow-permanent-delete<br>gclean desktop --allow-purge</code><span>Re-authentication and restart required</span></div>
+          </section>
+        </div>
       </section>
       <footer>Local-first · Open source · No message bodies · Preview before changes</footer>
     </main>

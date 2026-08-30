@@ -9,6 +9,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"gclean/internal/config"
 	"gclean/internal/desktop"
 	"gclean/internal/gmailclient"
 )
@@ -30,9 +31,15 @@ func newDesktopCmd(out, errOut io.Writer) *cobra.Command {
 			clientFactory := func() (gmailclient.Client, error) {
 				return resolveClient(fixtures, credentialsPath())
 			}
+			configPath, err := config.DefaultPath()
+			if err != nil {
+				return err
+			}
 			app, err := desktop.New(desktop.Config{
 				StorePath:       storePath(),
 				CachePath:       cachePath,
+				ConfigPath:      configPath,
+				SelectionPath:   selectionPath(),
 				CredentialsPath: credentialsPath(),
 				FixturePath:     fixtures,
 				AllowPurge:      allowPurge,

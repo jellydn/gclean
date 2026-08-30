@@ -27,6 +27,11 @@ type Pipeline struct {
 	// disables caching (some callers, e.g. dry-run, don't trash).
 	CachePath     string
 	SelectionPath string
+	// Account is the authenticated Gmail account that owns Store and any undo
+	// batch created by Apply.
+	Account string
+	// MutationLockHeld is set by callers that lock around Plan+Apply together.
+	MutationLockHeld bool
 	// SelectedSenders bypasses SelectionPath when SelectionLimited is true.
 	// This lets interactive clients represent an explicit empty cohort.
 	SelectedSenders  map[string]struct{}
@@ -86,15 +91,25 @@ func (p *Pipeline) ApplyStages() []Stage {
 
 // fetchAndClassify pulls messages, classifies each, and upserts to SQLite.
 func (p *Pipeline) fetchAndClassify(pl *Pipeline) error {
+	lock, err := storage.AcquireMutationLock(pl.CachePath)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = lock.Unlock() }()
+	if err := pl.Store.BindAccount(pl.Account); err != nil {
+		return err
+	}
 	msgs, err := pl.Client.ListMessages("", 0)
 	if err != nil {
 		return fmt.Errorf("list messages: %w", err)
 	}
+	records := make([]storage.StoredMessage, 0, len(msgs))
 	for _, m := range msgs {
 		c := Classify(m)
-		if err := pl.Store.Upsert(storage.FromClassified(&c, models.VerdictKeep)); err != nil {
-			return fmt.Errorf("persist %s: %w", m.ID, err)
-		}
+		records = append(records, storage.FromClassified(&c, models.VerdictKeep))
+	}
+	if err := pl.Store.ReplaceAll(records); err != nil {
+		return fmt.Errorf("replace scanned metadata: %w", err)
 	}
 	pl.scanned = len(msgs)
 	return nil
@@ -137,6 +152,18 @@ func (p *Pipeline) loadPlan(pl *Pipeline) error {
 // local-state dependencies and reports the trashed subset back onto the
 // pipeline state for the CLI to render.
 func (p *Pipeline) applyTrash(pl *Pipeline) error {
+	if err := pl.Store.BindAccount(pl.Account); err != nil {
+		return err
+	}
+	var lock *storage.MutationLock
+	if !pl.MutationLockHeld {
+		var err error
+		lock, err = storage.AcquireMutationLock(pl.CachePath)
+		if err != nil {
+			return err
+		}
+		defer func() { _ = lock.Unlock() }()
+	}
 	ids := []string{}
 	toTrash := []storage.StoredMessage{}
 	for _, d := range pl.decisions {
@@ -150,11 +177,11 @@ func (p *Pipeline) applyTrash(pl *Pipeline) error {
 		return nil
 	}
 	if pl.CachePath != "" {
-		if err := storage.SaveUndoCache(pl.CachePath, toTrash); err != nil {
+		if err := storage.SaveUndoCacheForAccount(pl.CachePath, pl.Account, toTrash); err != nil {
 			return fmt.Errorf("save undo cache: %w", err)
 		}
 	}
-	rc := &Reconciler{Store: pl.Store, CachePath: pl.CachePath}
+	rc := &Reconciler{Store: pl.Store, CachePath: pl.CachePath, Account: pl.Account}
 	trashErr := pl.Client.TrashMessages(ids)
 	if trashErr != nil {
 		// Reconcile a partial failure: find which messages actually made it

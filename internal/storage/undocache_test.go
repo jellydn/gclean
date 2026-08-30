@@ -1,11 +1,62 @@
 package storage
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 )
+
+func TestUndoCache_AccountBindingAndLegacyMigration(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "undo.json")
+	records := []StoredMessage{{ID: "m1"}}
+	if err := SaveUndoCacheForAccount(path, "account-a", records); err != nil {
+		t.Fatal(err)
+	}
+	batch, err := LoadUndoBatch(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if batch.Account != "account-a" || len(batch.Records) != 1 {
+		t.Fatalf("batch = %+v", batch)
+	}
+	if err := ValidateUndoAccount(path, "account-b"); err == nil || !strings.Contains(err.Error(), "account-a") {
+		t.Fatalf("mismatch error = %v", err)
+	}
+
+	payload, err := json.Marshal(records)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sum := sha256.Sum256(payload)
+	legacy, err := json.Marshal(map[string]any{
+		"version": 1, "checksum": hex.EncodeToString(sum[:]), "records": records,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, legacy, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := ValidateUndoAccount(path, "account-a"); err == nil || !strings.Contains(err.Error(), "predates account binding") {
+		t.Fatalf("legacy validation error = %v", err)
+	}
+}
+
+func TestMutationLockRejectsConcurrentProcess(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "undo.json")
+	first, err := AcquireMutationLock(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = first.Unlock() }()
+	if _, err := AcquireMutationLock(path); err == nil || !strings.Contains(err.Error(), "already running") {
+		t.Fatalf("second lock error = %v", err)
+	}
+}
 
 func TestSaveUndoCache_RoundTripsAtomically(t *testing.T) {
 	dir := t.TempDir()

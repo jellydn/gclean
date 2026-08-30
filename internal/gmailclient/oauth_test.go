@@ -3,12 +3,14 @@ package gmailclient
 import (
 	"io"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
+	"golang.org/x/oauth2"
 	"google.golang.org/api/gmail/v1"
 )
 
@@ -31,6 +33,42 @@ func TestOAuthScopes_DefaultIsModifyAndPurgeIsOptIn(t *testing.T) {
 	}
 	if len(purgeConfig.Scopes) != 2 || purgeConfig.Scopes[1] != gmail.MailGoogleComScope {
 		t.Fatalf("purge scopes = %v, want modify + full access", purgeConfig.Scopes)
+	}
+	authURL, err := url.Parse(AuthorizationURL(defaultConfig, "state-value"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if authURL.Query().Get("access_type") != "offline" || authURL.Query().Get("prompt") != "consent" {
+		t.Fatalf("authorization query = %v, want offline consent", authURL.Query())
+	}
+}
+
+func TestAuthorizationProfileIsExplicitAndPreservesRefreshToken(t *testing.T) {
+	t.Setenv("GCLEAN_TOKEN_PATH", filepath.Join(t.TempDir(), "token.json"))
+	if err := SaveToken(&oauth2.Token{AccessToken: "old", RefreshToken: "refresh"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := SaveTokenWithAuthorization(&oauth2.Token{AccessToken: "new"}, true); err != nil {
+		t.Fatal(err)
+	}
+	token, err := LoadToken()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if token.RefreshToken != "refresh" || !PurgeAuthorized() {
+		t.Fatalf("token/profile = %+v, purge=%v", token, PurgeAuthorized())
+	}
+	if err := SaveTokenWithAuthorization(&oauth2.Token{AccessToken: "least", RefreshToken: "least-refresh"}, false); err != nil {
+		t.Fatal(err)
+	}
+	if PurgeAuthorized() {
+		t.Fatal("normal login must remove permanent-delete capability")
+	}
+	if err := RemoveToken(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := LoadToken(); err == nil {
+		t.Fatal("RemoveToken should remove configured token path")
 	}
 }
 

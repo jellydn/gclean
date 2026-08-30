@@ -1,6 +1,7 @@
 const token = document.querySelector('meta[name="gclean-token"]').content;
 const $ = (id) => document.getElementById(id);
 let state = null;
+let settings = null;
 let action = "trash";
 const bytes = (n) => {
 	if (!n) return "0 B";
@@ -38,13 +39,84 @@ function toast(message, success = false) {
 }
 async function load() {
 	try {
-		state = await api("/api/state");
+		[state, settings] = await Promise.all([
+			api("/api/state"),
+			api("/api/settings"),
+		]);
 		render();
+		renderSettings();
 	} catch (e) {
 		toast(e.message);
 	} finally {
 		idle();
 	}
+}
+function lines(value) {
+	return value
+		.split("\n")
+		.map((line) => line.trim())
+		.filter(Boolean);
+}
+function renderSettings() {
+	$("keep-contacts").checked = settings.keep.contacts;
+	$("keep-replied").checked = settings.keep.replied;
+	$("keep-starred").checked = settings.keep.starred;
+	$("keep-important").checked = settings.keep.important;
+	$("keep-sent").checked = settings.keep.sent_by_user;
+	$("recent-days").value = settings.keep.recent_days;
+	$("delete-rules").value = settings.delete.join("\n");
+	$("archive-rules").value = settings.archive.join("\n");
+	$("ignored-domains").value = settings.ignore.join("\n");
+
+	const oauth = settings.oauth;
+	const oauthBadge = $("oauth-badge");
+	oauthBadge.textContent = oauth.fixtureMode
+		? "Fixture mode"
+		: oauth.tokenPresent
+			? "Connected"
+			: oauth.credentialsPresent
+				? "Ready to connect"
+				: "Setup required";
+	oauthBadge.classList.toggle("connected", oauth.tokenPresent);
+	$("credential-copy").textContent = oauth.credentialsPresent
+		? `Configured securely at ${settings.paths.credentials}`
+		: `Choose the downloaded file; it will be stored at ${settings.paths.credentials}`;
+	$("settings-connect").disabled =
+		oauth.fixtureMode || !oauth.credentialsPresent;
+	$("disconnect").disabled = oauth.fixtureMode || !oauth.tokenPresent;
+	$("credentials-file").disabled = oauth.fixtureMode;
+	$("purge-badge").textContent = oauth.purgeEnabled
+		? "Enabled for this session"
+		: oauth.permanentDeleteAuthorized
+			? "Authorized · restart required"
+			: "Disabled";
+	$("purge-badge").classList.toggle("connected", oauth.purgeEnabled);
+	$("purge-badge").classList.toggle("danger-badge", !oauth.purgeEnabled);
+
+	const labels = {
+		config: "Configuration",
+		database: "Metadata database",
+		undoCache: "Undo cache",
+		selection: "TUI selection",
+		credentials: "OAuth credentials",
+		token: "OAuth token",
+	};
+	$("settings-paths").innerHTML = Object.entries(settings.paths)
+		.map(
+			([key, value]) =>
+				`<div><dt>${labels[key]}</dt><dd>${escapeHTML(value)}${settings.pathOverrides[key] ? `<small>${escapeHTML(environmentName(key))} override · restart after changing</small>` : ""}</dd></div>`,
+		)
+		.join("");
+}
+function environmentName(key) {
+	return {
+		config: "GCLEAN_CONFIG_PATH",
+		database: "GCLEAN_DB_PATH",
+		undoCache: "GCLEAN_UNDO_CACHE",
+		selection: "GCLEAN_SELECTION_PATH",
+		credentials: "GCLEAN_CREDENTIALS_PATH",
+		token: "GCLEAN_TOKEN_PATH",
+	}[key];
 }
 function render() {
 	const connected = state.authenticated;
@@ -168,7 +240,7 @@ $("scan").addEventListener("click", async () => {
 		idle();
 	}
 });
-$("login").addEventListener("click", async () => {
+async function connect() {
 	busy("Preparing secure OAuth…");
 	try {
 		const result = await api("/api/login", {});
@@ -183,7 +255,9 @@ $("login").addEventListener("click", async () => {
 	} finally {
 		idle();
 	}
-});
+}
+$("login").addEventListener("click", connect);
+$("settings-connect").addEventListener("click", connect);
 async function pollAuth() {
 	for (let i = 0; i < 150; i++) {
 		await new Promise((r) => setTimeout(r, 2000));
@@ -263,4 +337,105 @@ $("restore").addEventListener("click", async () => {
 		idle();
 	}
 });
+$("settings-form").addEventListener("submit", async (event) => {
+	event.preventDefault();
+	if (!event.currentTarget.reportValidity()) return;
+	$("settings-status").textContent = "Saving…";
+	try {
+		settings = await api("/api/settings", {
+			version: settings.version,
+			keep: {
+				contacts: $("keep-contacts").checked,
+				replied: $("keep-replied").checked,
+				starred: $("keep-starred").checked,
+				important: $("keep-important").checked,
+				sent_by_user: $("keep-sent").checked,
+				recent_days: Number($("recent-days").value),
+			},
+			delete: lines($("delete-rules").value),
+			archive: lines($("archive-rules").value),
+			ignore: lines($("ignored-domains").value),
+		});
+		$("settings-status").textContent = "Saved · preview refreshed";
+		toast("Cleanup settings saved. No Gmail changes were made.", true);
+		await load();
+	} catch (error) {
+		$("settings-status").textContent = "Not saved";
+		toast(error.message);
+	}
+});
+$("reset-settings").addEventListener("click", async () => {
+	if (
+		!confirm("Reset cleanup protections and rules to gclean's safe defaults?")
+	)
+		return;
+	try {
+		settings = await api("/api/settings/reset", {});
+		renderSettings();
+		$("settings-status").textContent = "Defaults restored";
+		toast("Safe cleanup defaults restored.", true);
+		await load();
+	} catch (error) {
+		toast(error.message);
+	}
+});
+$("credentials-file").addEventListener("change", async (event) => {
+	const file = event.currentTarget.files[0];
+	if (!file) return;
+	if (
+		settings.oauth.credentialsPresent &&
+		!confirm(
+			"Replace the configured OAuth credentials and disconnect the current session?",
+		)
+	) {
+		event.currentTarget.value = "";
+		return;
+	}
+	busy("Validating OAuth credentials…", "The file stays on this computer.");
+	try {
+		const credentials = JSON.parse(await file.text());
+		const result = await api("/api/settings/credentials", { credentials });
+		toast(result.message, true);
+		await load();
+	} catch (error) {
+		toast(
+			error instanceof SyntaxError
+				? "The selected file is not valid JSON."
+				: error.message,
+		);
+	} finally {
+		event.currentTarget.value = "";
+		idle();
+	}
+});
+$("disconnect").addEventListener("click", async () => {
+	if (!confirm("Disconnect Gmail and remove the local OAuth token?")) return;
+	try {
+		const result = await api("/api/logout", {});
+		toast(result.message, true);
+		await load();
+	} catch (error) {
+		toast(error.message);
+	}
+});
+const navigation = [...document.querySelectorAll("nav a")];
+const sections = navigation
+	.map((link) => document.querySelector(link.getAttribute("href")))
+	.filter(Boolean);
+const observer = new IntersectionObserver(
+	(entries) => {
+		const visible = entries
+			.filter((entry) => entry.isIntersecting)
+			.sort((a, b) => b.intersectionRatio - a.intersectionRatio)[0];
+		if (!visible) return;
+		for (const link of navigation) {
+			link.classList.toggle(
+				"active",
+				link.getAttribute("href") === `#${visible.target.id}`,
+			);
+		}
+	},
+	{ rootMargin: "-20% 0px -65%", threshold: [0, 0.1] },
+);
+for (const section of sections) observer.observe(section);
 load();

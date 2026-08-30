@@ -16,6 +16,7 @@ import (
 //
 // Supported predicates:
 //   - has:<header-name>        — message has the named RFC822 header
+//   - subject:<substring>      — substring match against the subject
 //   - category:<name>          — Gmail category (promotions, social, ...)
 //   - from:<substring>         — substring match against From address
 //   - older_than:<Nd>          — date is older than N days
@@ -48,7 +49,21 @@ func ParseRule(action, raw string) (Rule, error) {
 		if i <= 0 || i == len(f)-1 {
 			return r, fmt.Errorf("invalid predicate %q (expected key:value)", f)
 		}
-		r.Predicates = append(r.Predicates, Predicate{Key: f[:i], Value: f[i+1:]})
+		predicate := Predicate{Key: f[:i], Value: f[i+1:]}
+		switch predicate.Key {
+		case "has", "subject", "category", "from":
+		case "older_than":
+			if _, err := ParseDuration(predicate.Value); err != nil {
+				return r, err
+			}
+		case "larger_than":
+			if _, err := ParseByteSize(predicate.Value); err != nil {
+				return r, err
+			}
+		default:
+			return r, fmt.Errorf("unknown key %q", predicate.Key)
+		}
+		r.Predicates = append(r.Predicates, predicate)
 	}
 	return r, nil
 }

@@ -25,6 +25,11 @@ Trash. The last batch can be restored. Permanent Empty Trash is hidden unless
 the app is started with `--allow-purge`, and requires a separate full-access
 OAuth grant plus an irreversible-action confirmation.
 
+The built-in **Settings** page provides safe keep defaults, validated cleanup
+and archive rules, protected domains, guided OAuth credential import/status,
+and local path diagnostics. Cleanup settings are persisted atomically to the
+same `config.yaml` used by the CLI; secret and token contents are never shown.
+
 See [Desktop setup and packaging](docs/desktop.md) for Google Cloud Console,
 security, cross-platform builds, and platform-specific launch notes.
 
@@ -56,6 +61,10 @@ failures against Gmail's actual state via `InTrash`, so a partially-applied
 `clean`/`purge` trims the undo cache and local store instead of drifting. The seam
 is `internal/gmailclient.Client`, so the fixture client remains available for
 safe local end-to-end testing.
+
+OAuth requests offline access for refreshable desktop sessions. Local metadata
+and recovery batches are account-bound; gclean refuses to merge or restore them
+under a different Gmail account.
 
 For real Gmail setup, provide `credentials.json` at
 `~/.config/gclean/credentials.json` or set `GCLEAN_CREDENTIALS_PATH`, run
@@ -146,7 +155,7 @@ production use.
 - Native signed/notarized installer bundles (the portable single binary and
   browser-hosted desktop UI are available now)
 - Per-message rate-limited batcher for `clean`
-- `gclean rules` editor (currently show-only)
+- Richer rule-builder presets beyond the validated desktop advanced editor
 - `gclean report` analytics export
 
 See PRD §16 for the long-horizon list.

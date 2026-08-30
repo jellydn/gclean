@@ -29,6 +29,17 @@ type RealClient struct {
 	service         *gmail.Service
 }
 
+func (r *RealClient) AccountEmail() (string, error) {
+	profile, err := r.service.Users.GetProfile("me").Do()
+	if err != nil {
+		return "", fmt.Errorf("get Gmail profile: %w", err)
+	}
+	if profile.EmailAddress == "" {
+		return "", errors.New("Gmail profile returned no account identity")
+	}
+	return strings.ToLower(profile.EmailAddress), nil
+}
+
 // NewRealClient validates that credentials.json exists, loads the persisted
 // token, and builds an authenticated Gmail service. It returns
 // ErrCredentialsMissing if the path is empty, and propagates I/O or auth
@@ -160,32 +171,9 @@ func (r *RealClient) EmptyTrash() error {
 		})
 		if err != nil {
 			if isScopeInsufficient(err) {
-				// Google's backend requires the full mail.google.com scope for
-				// batchDelete even though the docs say gmail.modify suffices
-				// (googleapis/google-api-python-client#2710). Fall back to
-				// per-message delete, which works with gmail.modify.
-				slog.Warn("batchDelete not permitted by token scope; falling back to per-message delete", "count", len(batch.Ids))
-				if err := r.deleteIndividually(batch.Ids); err != nil {
-					return err
-				}
-			} else {
-				return err
+				return fmt.Errorf("empty trash requires full Gmail authorization; run `gclean login --allow-permanent-delete`: %w", err)
 			}
-		}
-	}
-	return nil
-}
-
-// deleteIndividually permanently deletes messages one at a time. Used as the
-// EmptyTrash fallback when the token lacks the full-access scope batchDelete
-// requires; delete costs 10 quota units per message, so this is slower than
-// one batchDelete call.
-func (r *RealClient) deleteIndividually(ids []string) error {
-	for i, id := range ids {
-		if err := r.retryMutation("delete message "+id, func() error {
-			return r.service.Users.Messages.Delete("me", id).Do()
-		}); err != nil {
-			return fmt.Errorf("delete message %d/%d (%s): %w", i+1, len(ids), id, err)
+			return err
 		}
 	}
 	return nil

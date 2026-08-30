@@ -16,6 +16,8 @@ import (
 	"strconv"
 	"time"
 
+	"gclean/internal/fileutil"
+
 	"golang.org/x/oauth2"
 	"golang.org/x/oauth2/google"
 	"google.golang.org/api/gmail/v1"
@@ -27,6 +29,13 @@ import (
 var oauthScopes = []string{gmail.GmailModifyScope}
 
 const oauthListenHost = "localhost"
+
+const authorizationProfileVersion = 1
+
+type authorizationProfile struct {
+	Version           int  `json:"version"`
+	PermanentDeleteOK bool `json:"permanent_delete_ok"`
+}
 
 // tokenPath returns the path to the persisted OAuth token.
 // Honors GCLEAN_TOKEN_PATH; falls back to ~/.config/gclean/token.json.
@@ -73,6 +82,33 @@ func LoadConfigWithRedirectAndPurge(credentialsPath, redirectURL string, allowPu
 	return cfg, nil
 }
 
+// ValidateCredentials verifies a Google Desktop OAuth client file without
+// persisting or exposing its contents.
+func ValidateCredentials(data []byte) error {
+	var envelope struct {
+		Installed json.RawMessage `json:"installed"`
+	}
+	if err := json.Unmarshal(data, &envelope); err != nil || len(envelope.Installed) == 0 {
+		return errors.New("select a valid Google OAuth Desktop app credentials JSON file")
+	}
+	if _, err := google.ConfigFromJSON(data, gmail.GmailModifyScope); err != nil {
+		return errors.New("the selected file is not a valid Google OAuth client configuration")
+	}
+	return nil
+}
+
+// SaveCredentials validates a Google Desktop OAuth client file and stores it
+// atomically. Callers must never log or return the supplied JSON.
+func SaveCredentials(path string, data []byte) error {
+	if err := ValidateCredentials(data); err != nil {
+		return err
+	}
+	if err := fileutil.WriteAtomic(path, data, 0o600, ".gclean-credentials-*"); err != nil {
+		return fmt.Errorf("store OAuth credentials: %w", err)
+	}
+	return nil
+}
+
 // SaveToken persists an oauth2.Token to token.json with mode 0600.
 func SaveToken(tok *oauth2.Token) error {
 	p := tokenPath()
@@ -83,11 +119,66 @@ func SaveToken(tok *oauth2.Token) error {
 	if err != nil {
 		return fmt.Errorf("marshal token: %w", err)
 	}
-	if err := os.WriteFile(p, b, 0o600); err != nil {
+	if err := fileutil.WriteAtomic(p, b, 0o600, ".gclean-token-*"); err != nil {
 		return fmt.Errorf("write token: %w", err)
 	}
 	return nil
 }
+
+// SaveTokenWithAuthorization preserves an existing refresh token if Google's
+// exchange omits it and records whether this login explicitly granted the
+// permanent-delete scope. Missing legacy profiles are treated as no grant.
+func SaveTokenWithAuthorization(tok *oauth2.Token, permanentDelete bool) error {
+	if tok.RefreshToken == "" {
+		if existing, err := LoadToken(); err == nil {
+			tok.RefreshToken = existing.RefreshToken
+		}
+	}
+	// Remove any previous grant marker first so an interrupted or failed login
+	// cannot leave a stale permanent-delete capability attached to a new token.
+	if err := os.Remove(authorizationProfilePath()); err != nil && !os.IsNotExist(err) {
+		return err
+	}
+	if err := SaveToken(tok); err != nil {
+		return err
+	}
+	profile := authorizationProfile{Version: authorizationProfileVersion, PermanentDeleteOK: permanentDelete}
+	data, err := json.Marshal(profile)
+	if err != nil {
+		return err
+	}
+	if err := fileutil.WriteAtomic(authorizationProfilePath(), data, 0o600, ".gclean-authorization-*"); err != nil {
+		return fmt.Errorf("write authorization profile: %w", err)
+	}
+	return nil
+}
+
+// PurgeAuthorized reports whether the current token was created by an
+// explicit permanent-delete login. Legacy tokens without a profile fail safe.
+func PurgeAuthorized() bool {
+	data, err := os.ReadFile(authorizationProfilePath())
+	if err != nil {
+		return false
+	}
+	var profile authorizationProfile
+	return json.Unmarshal(data, &profile) == nil &&
+		profile.Version == authorizationProfileVersion && profile.PermanentDeleteOK
+}
+
+// RemoveToken removes both OAuth credentials and the local scope profile.
+func RemoveToken() error {
+	for _, path := range []string{tokenPath(), authorizationProfilePath()} {
+		if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
+			return err
+		}
+	}
+	return nil
+}
+
+func authorizationProfilePath() string { return tokenPath() + ".authorization.json" }
+
+// TokenPath returns the configured token path for user-facing status output.
+func TokenPath() string { return tokenPath() }
 
 // LoadToken reads the persisted oauth2.Token from token.json.
 func LoadToken() (*oauth2.Token, error) {
@@ -107,6 +198,12 @@ func LoadToken() (*oauth2.Token, error) {
 // provided config and token.
 func TokenSource(ctx context.Context, cfg *oauth2.Config, tok *oauth2.Token) oauth2.TokenSource {
 	return cfg.TokenSource(ctx, tok)
+}
+
+// AuthorizationURL requests offline access and explicit consent so Google
+// returns a refresh token for a persistent desktop session.
+func AuthorizationURL(cfg *oauth2.Config, state string) string {
+	return cfg.AuthCodeURL(state, oauth2.AccessTypeOffline, oauth2.ApprovalForce)
 }
 
 // AuthCodeServer is a minimal HTTP server that captures the OAuth authorization

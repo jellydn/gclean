@@ -37,6 +37,7 @@ type Reconciler struct {
 	// leave Store nil.
 	Store     *storage.Store
 	CachePath string
+	Account   string
 }
 
 // ReconcileTrash trims the undo cache and the local mark so they reflect only
@@ -47,7 +48,7 @@ type Reconciler struct {
 func (r *Reconciler) ReconcileTrash(records []storage.StoredMessage, trashed []string) ([]storage.StoredMessage, error) {
 	kept := storage.FilterRecords(records, trashed)
 	if r.CachePath != "" {
-		if err := storage.ReplaceOrRemoveUndoCache(r.CachePath, kept); err != nil {
+		if err := storage.ReplaceOrRemoveUndoCacheForAccount(r.CachePath, r.Account, kept); err != nil {
 			return nil, err
 		}
 	}
@@ -79,6 +80,14 @@ func (r *Reconciler) ReconcileTrashFailure(gmail ReadBack, records []storage.Sto
 // entirely) so `gclean undo` can be retried and can never point at ghosts. It
 // returns the number of messages actually restored.
 func (r *Reconciler) Undo(gmail Gmail, records []storage.StoredMessage) (int, error) {
+	lock, records, err := r.lockAndLoad(records)
+	if err != nil {
+		return 0, err
+	}
+	defer func() { _ = lock.Unlock() }()
+	if err := r.Store.BindAccount(r.Account); err != nil {
+		return 0, err
+	}
 	ids := recordIDs(records)
 	restored, restoreErr := gmail.RestoreFromTrash(ids)
 	if restoreErr != nil {
@@ -93,7 +102,7 @@ func (r *Reconciler) Undo(gmail Gmail, records []storage.StoredMessage) (int, er
 		if err := r.Store.RestoreTrashed(storage.FilterRecords(records, restored)); err != nil {
 			return 0, fmt.Errorf("restore: %w (reconcile re-insert failed: %v)", restoreErr, err)
 		}
-		if err := storage.ReplaceOrRemoveUndoCache(r.CachePath, storage.FilterRecords(records, still)); err != nil {
+		if err := storage.ReplaceOrRemoveUndoCacheForAccount(r.CachePath, r.Account, storage.FilterRecords(records, still)); err != nil {
 			return 0, fmt.Errorf("restore: %w (reconcile cache rewrite failed: %v)", restoreErr, err)
 		}
 		if len(restored) == 0 {
@@ -110,14 +119,14 @@ func (r *Reconciler) Undo(gmail Gmail, records []storage.StoredMessage) (int, er
 		if inErr != nil {
 			return 0, fmt.Errorf("restore: %w (reconcile failed: %v)", err, inErr)
 		}
-		if rerr := storage.ReplaceOrRemoveUndoCache(r.CachePath, storage.FilterRecords(records, still)); rerr != nil {
+		if rerr := storage.ReplaceOrRemoveUndoCacheForAccount(r.CachePath, r.Account, storage.FilterRecords(records, still)); rerr != nil {
 			return 0, fmt.Errorf("restore: %w (reconcile: %v)", err, rerr)
 		}
 		return 0, fmt.Errorf("restore: %w", err)
 	}
 	// Nothing remains in Trash; a cache file with zero records would block a
 	// retried clean, so remove it rather than write an empty one.
-	if err := storage.ReplaceOrRemoveUndoCache(r.CachePath, nil); err != nil {
+	if err := storage.ReplaceOrRemoveUndoCacheForAccount(r.CachePath, r.Account, nil); err != nil {
 		return 0, fmt.Errorf("restore: remove undo cache: %w", err)
 	}
 	return len(restored), nil
@@ -130,6 +139,11 @@ func (r *Reconciler) Undo(gmail Gmail, records []storage.StoredMessage) (int, er
 // removed so undo cannot point at permanently deleted IDs. A full success
 // also removes the cache.
 func (r *Reconciler) Purge(gmail Gmail, records []storage.StoredMessage) error {
+	lock, records, err := r.lockAndLoad(records)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = lock.Unlock() }()
 	if err := gmail.EmptyTrash(); err != nil {
 		if len(records) > 0 {
 			still, inErr := gmail.InTrash(recordIDs(records))
@@ -137,12 +151,12 @@ func (r *Reconciler) Purge(gmail Gmail, records []storage.StoredMessage) error {
 				return fmt.Errorf("purge: %w (reconcile failed: %v)", err, inErr)
 			}
 			if len(still) > 0 {
-				if err2 := storage.ReplaceUndoCache(r.CachePath, storage.FilterRecords(records, still)); err2 != nil {
+				if err2 := storage.ReplaceUndoCacheForAccount(r.CachePath, r.Account, storage.FilterRecords(records, still)); err2 != nil {
 					return fmt.Errorf("purge: %w (reconcile cache rewrite failed: %v)", err, err2)
 				}
 				return fmt.Errorf("purge partially applied: %d messages remain in Trash: %w", len(still), err)
 			}
-			if err2 := storage.ReplaceOrRemoveUndoCache(r.CachePath, nil); err2 != nil {
+			if err2 := storage.ReplaceOrRemoveUndoCacheForAccount(r.CachePath, r.Account, nil); err2 != nil {
 				return fmt.Errorf("purge: %w (reconcile cache remove failed: %v)", err, err2)
 			}
 		}
@@ -150,10 +164,30 @@ func (r *Reconciler) Purge(gmail Gmail, records []storage.StoredMessage) error {
 	}
 	// Full success: nothing left in Trash; remove the cache so undo cannot
 	// point at permanently deleted IDs.
-	if err := storage.ReplaceOrRemoveUndoCache(r.CachePath, nil); err != nil {
+	if err := storage.ReplaceOrRemoveUndoCacheForAccount(r.CachePath, r.Account, nil); err != nil {
 		return fmt.Errorf("purge: remove undo cache: %w", err)
 	}
 	return nil
+}
+
+func (r *Reconciler) lockAndLoad(fallback []storage.StoredMessage) (*storage.MutationLock, []storage.StoredMessage, error) {
+	lock, err := storage.AcquireMutationLock(r.CachePath)
+	if err != nil {
+		return nil, nil, err
+	}
+	if r.CachePath == "" {
+		return lock, fallback, nil
+	}
+	batch, err := storage.LoadUndoBatch(r.CachePath)
+	if err != nil {
+		_ = lock.Unlock()
+		return nil, nil, err
+	}
+	if err := storage.ValidateUndoAccount(r.CachePath, r.Account); err != nil {
+		_ = lock.Unlock()
+		return nil, nil, err
+	}
+	return lock, batch.Records, nil
 }
 
 // recordIDs extracts the message IDs from undo-cache records.

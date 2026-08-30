@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"path/filepath"
 	"time"
 
 	"github.com/spf13/cobra"
@@ -49,7 +48,7 @@ func newLoginCmd(out, errOut io.Writer) *cobra.Command {
 			if err != nil {
 				return fmt.Errorf("load credentials: %w", err)
 			}
-			authURL := cfg.AuthCodeURL(state)
+			authURL := gmailclient.AuthorizationURL(cfg, state)
 			_, _ = fmt.Fprintln(out, "Opening browser for Gmail authentication...")
 			if err := gmailclient.OpenBrowser(authURL); err != nil {
 				_, _ = fmt.Fprintf(out, "Could not open browser automatically. Open this URL manually:\n%s\n", authURL)
@@ -65,12 +64,11 @@ func newLoginCmd(out, errOut io.Writer) *cobra.Command {
 				return fmt.Errorf("exchange code: %w", err)
 			}
 
-			if err := gmailclient.SaveToken(tok); err != nil {
+			if err := gmailclient.SaveTokenWithAuthorization(tok, allowPurge); err != nil {
 				return fmt.Errorf("save token: %w", err)
 			}
 
-			tokPath := filepath.Join(filepath.Dir(credentialsPath()), "token.json")
-			_, _ = fmt.Fprintln(out, "Authentication successful. Token saved to "+tokPath)
+			_, _ = fmt.Fprintln(out, "Authentication successful. Token saved to "+gmailclient.TokenPath())
 			return nil
 		},
 	}
@@ -83,8 +81,7 @@ func newLogoutCmd(out, errOut io.Writer) *cobra.Command {
 		Use:   "logout",
 		Short: "Remove the locally stored OAuth token",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			tok := filepath.Join(filepath.Dir(credentialsPath()), "token.json")
-			if err := os.Remove(tok); err != nil && !os.IsNotExist(err) {
+			if err := gmailclient.RemoveToken(); err != nil {
 				return err
 			}
 			_, _ = fmt.Fprintln(out, "Logged out (token.json removed if present).")

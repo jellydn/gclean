@@ -14,6 +14,7 @@ import (
 	"gclean/internal/config"
 	"gclean/internal/engine"
 	"gclean/internal/format"
+	"gclean/internal/gmailclient"
 	"gclean/internal/storage"
 )
 
@@ -61,6 +62,10 @@ func newScanCmd(out, errOut io.Writer) *cobra.Command {
 			if err != nil {
 				return err
 			}
+			account, err := client.AccountEmail()
+			if err != nil {
+				return err
+			}
 			doc, err := config.Load()
 			if err != nil {
 				return err
@@ -69,6 +74,8 @@ func newScanCmd(out, errOut io.Writer) *cobra.Command {
 			if err != nil {
 				return err
 			}
+			p.Account = account
+			p.CachePath, _ = defaultCache()
 			if err := p.Run(p.ScanStages()...); err != nil {
 				return err
 			}
@@ -215,6 +222,10 @@ func newCleanCmd(out, errOut io.Writer) *cobra.Command {
 			if err != nil {
 				return err
 			}
+			account, err := client.AccountEmail()
+			if err != nil {
+				return err
+			}
 			doc, err := config.Load()
 			if err != nil {
 				return err
@@ -224,6 +235,13 @@ func newCleanCmd(out, errOut io.Writer) *cobra.Command {
 			if err != nil {
 				return err
 			}
+			p.Account = account
+			lock, err := storage.AcquireMutationLock(cache)
+			if err != nil {
+				return err
+			}
+			defer func() { _ = lock.Unlock() }()
+			p.MutationLockHeld = true
 			if err := p.Run(p.PlanStages()...); err != nil {
 				return err
 			}
@@ -252,13 +270,20 @@ func newPurgeCmd(out, errOut io.Writer) *cobra.Command {
 				_, _ = fmt.Fprintln(errOut, "Refusing to purge without --yes. Re-run with --yes to confirm.")
 				return errors.New("confirmation required")
 			}
+			if fixtures == "" && !gmailclient.PurgeAuthorized() {
+				return errors.New("permanent deletion is not authorized; run `gclean login --allow-permanent-delete` first")
+			}
 			cache, _ := defaultCache()
 			records, _ := storage.LoadUndoCache(cache) // best-effort; may be absent
 			client, err := resolveClient(fixtures, credentialsPath())
 			if err != nil {
 				return err
 			}
-			rc := engine.Reconciler{CachePath: cache}
+			account, err := client.AccountEmail()
+			if err != nil {
+				return err
+			}
+			rc := engine.Reconciler{CachePath: cache, Account: account}
 			if err := rc.Purge(client, records); err != nil {
 				return err
 			}
@@ -293,12 +318,16 @@ func newUndoCmd(out, errOut io.Writer) *cobra.Command {
 			if err != nil {
 				return err
 			}
+			account, err := client.AccountEmail()
+			if err != nil {
+				return err
+			}
 			store, err := storage.Open(storePath())
 			if err != nil {
 				return err
 			}
 			defer func() { _ = store.Close() }()
-			rc := engine.Reconciler{Store: store, CachePath: cache}
+			rc := engine.Reconciler{Store: store, CachePath: cache, Account: account}
 			restored, err := rc.Undo(client, records)
 			if err != nil {
 				return err

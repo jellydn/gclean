@@ -44,11 +44,15 @@ const (
 type Config struct {
 	StorePath       string
 	CachePath       string
+	ConfigPath      string
+	SelectionPath   string
 	CredentialsPath string
 	FixturePath     string
 	AllowPurge      bool
 	Client          func() (gmailclient.Client, error)
 	LoadConfig      func() (config.Document, error)
+	SaveConfig      func(config.Document) error
+	DefaultConfig   func() (config.Document, error)
 }
 
 // App owns one desktop session. Mutations are serialized and selected senders
@@ -65,6 +69,8 @@ type App struct {
 	operation sync.Mutex
 	authMu    sync.RWMutex
 	auth      authStatus
+	originMu  sync.RWMutex
+	host      string
 }
 
 type authStatus struct {
@@ -114,10 +120,59 @@ type actionResponse struct {
 	AuthURL string `json:"authUrl,omitempty"`
 }
 
+type settingsRequest struct {
+	Version int               `json:"version"`
+	Keep    engine.KeepConfig `json:"keep"`
+	Delete  []string          `json:"delete"`
+	Archive []string          `json:"archive"`
+	Ignore  []string          `json:"ignore"`
+}
+
+type settingsPaths struct {
+	Config      string `json:"config"`
+	Database    string `json:"database"`
+	UndoCache   string `json:"undoCache"`
+	Selection   string `json:"selection"`
+	Credentials string `json:"credentials"`
+	Token       string `json:"token"`
+}
+
+type settingsOAuth struct {
+	CredentialsPresent        bool `json:"credentialsPresent"`
+	TokenPresent              bool `json:"tokenPresent"`
+	PermanentDeleteAuthorized bool `json:"permanentDeleteAuthorized"`
+	PurgeEnabled              bool `json:"purgeEnabled"`
+	FixtureMode               bool `json:"fixtureMode"`
+}
+
+type settingsResponse struct {
+	Version       int               `json:"version"`
+	Keep          engine.KeepConfig `json:"keep"`
+	Delete        []string          `json:"delete"`
+	Archive       []string          `json:"archive"`
+	Ignore        []string          `json:"ignore"`
+	Paths         settingsPaths     `json:"paths"`
+	OAuth         settingsOAuth     `json:"oauth"`
+	PathOverrides map[string]bool   `json:"pathOverrides"`
+}
+
+type credentialsRequest struct {
+	Credentials json.RawMessage `json:"credentials"`
+}
+
 // New opens the metadata store and creates an isolated desktop session.
 func New(cfg Config) (*App, error) {
 	if cfg.LoadConfig == nil {
 		cfg.LoadConfig = config.Load
+	}
+	if cfg.SaveConfig == nil {
+		cfg.SaveConfig = config.Save
+	}
+	if cfg.DefaultConfig == nil {
+		cfg.DefaultConfig = config.DefaultDocument
+	}
+	if cfg.ConfigPath == "" {
+		cfg.ConfigPath, _ = config.DefaultPath()
 	}
 	if dir := filepath.Dir(cfg.StorePath); dir != "." {
 		if err := os.MkdirAll(dir, 0o700); err != nil {
@@ -151,13 +206,18 @@ func (a *App) Handler() http.Handler {
 	mux.HandleFunc("GET /", a.index)
 	mux.HandleFunc("GET /assets/", a.static)
 	mux.HandleFunc("GET /api/state", a.api(a.getState))
+	mux.HandleFunc("GET /api/settings", a.api(a.getSettings))
+	mux.HandleFunc("POST /api/settings", a.api(a.saveSettings))
+	mux.HandleFunc("POST /api/settings/reset", a.api(a.resetSettings))
+	mux.HandleFunc("POST /api/settings/credentials", a.api(a.saveCredentials))
+	mux.HandleFunc("POST /api/logout", a.api(a.logout))
 	mux.HandleFunc("POST /api/scan", a.api(a.scan))
 	mux.HandleFunc("POST /api/selection", a.api(a.selection))
 	mux.HandleFunc("POST /api/trash", a.api(a.trash))
 	mux.HandleFunc("POST /api/restore", a.api(a.restore))
 	mux.HandleFunc("POST /api/purge", a.api(a.purge))
 	mux.HandleFunc("POST /api/login", a.api(a.login))
-	return securityHeaders(mux)
+	return a.validateHost(securityHeaders(mux))
 }
 
 // Serve listens only on IPv4 loopback and shuts down when ctx is cancelled.
@@ -168,6 +228,9 @@ func (a *App) Serve(ctx context.Context) (string, error) {
 	}
 	server := &http.Server{Handler: a.Handler(), ReadHeaderTimeout: 5 * time.Second}
 	url := "http://" + listener.Addr().String() + "/"
+	a.originMu.Lock()
+	a.host = listener.Addr().String()
+	a.originMu.Unlock()
 	go func() {
 		<-ctx.Done()
 		shutdownCtx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
@@ -180,6 +243,27 @@ func (a *App) Serve(ctx context.Context) (string, error) {
 		}
 	}()
 	return url, nil
+}
+
+func (a *App) validateHost(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		a.originMu.RLock()
+		expected := a.host
+		a.originMu.RUnlock()
+		if expected != "" {
+			if r.Host != expected {
+				http.Error(w, "invalid desktop host", http.StatusForbidden)
+				return
+			}
+		} else {
+			host, _, err := net.SplitHostPort(r.Host)
+			if err != nil || host != "127.0.0.1" {
+				http.Error(w, "invalid desktop host", http.StatusForbidden)
+				return
+			}
+		}
+		next.ServeHTTP(w, r)
+	})
 }
 
 func (a *App) index(w http.ResponseWriter, _ *http.Request) {
@@ -223,6 +307,10 @@ func (a *App) api(next func(http.ResponseWriter, *http.Request) error) http.Hand
 			writeError(w, http.StatusUnsupportedMediaType, "Content-Type must be application/json")
 			return
 		}
+		if r.Method == http.MethodPost && r.Header.Get("Origin") != "http://"+r.Host {
+			writeError(w, http.StatusForbidden, "invalid desktop origin")
+			return
+		}
 		if err := next(w, r); err != nil {
 			var apiErr *statusError
 			if errors.As(err, &apiErr) {
@@ -240,6 +328,202 @@ func (a *App) getState(w http.ResponseWriter, _ *http.Request) error {
 		return err
 	}
 	return writeJSON(w, http.StatusOK, state)
+}
+
+func (a *App) getSettings(w http.ResponseWriter, _ *http.Request) error {
+	settings, err := a.buildSettings()
+	if err != nil {
+		return err
+	}
+	return writeJSON(w, http.StatusOK, settings)
+}
+
+func (a *App) buildSettings() (settingsResponse, error) {
+	document, err := a.cfg.LoadConfig()
+	if err != nil {
+		return settingsResponse{}, err
+	}
+	_, credentialsErr := os.Stat(a.cfg.CredentialsPath)
+	_, tokenErr := gmailclient.LoadToken()
+	return settingsResponse{
+		Version: 1,
+		Keep:    document.Keep,
+		Delete:  append([]string(nil), document.Delete...),
+		Archive: append([]string(nil), document.Archive...),
+		Ignore:  append([]string(nil), document.Ignore...),
+		Paths: settingsPaths{
+			Config: a.cfg.ConfigPath, Database: a.cfg.StorePath,
+			UndoCache: a.cfg.CachePath, Selection: a.cfg.SelectionPath,
+			Credentials: a.cfg.CredentialsPath, Token: gmailclient.TokenPath(),
+		},
+		OAuth: settingsOAuth{
+			CredentialsPresent:        credentialsErr == nil || a.cfg.FixturePath != "",
+			TokenPresent:              tokenErr == nil || a.cfg.FixturePath != "",
+			PermanentDeleteAuthorized: gmailclient.PurgeAuthorized(),
+			PurgeEnabled:              a.cfg.AllowPurge && (a.cfg.FixturePath != "" || gmailclient.PurgeAuthorized()),
+			FixtureMode:               a.cfg.FixturePath != "",
+		},
+		PathOverrides: map[string]bool{
+			"config":      os.Getenv("GCLEAN_CONFIG_PATH") != "",
+			"database":    os.Getenv("GCLEAN_DB_PATH") != "",
+			"undoCache":   os.Getenv("GCLEAN_UNDO_CACHE") != "",
+			"selection":   os.Getenv("GCLEAN_SELECTION_PATH") != "",
+			"credentials": os.Getenv("GCLEAN_CREDENTIALS_PATH") != "",
+			"token":       os.Getenv("GCLEAN_TOKEN_PATH") != "",
+		},
+	}, nil
+}
+
+func (a *App) saveSettings(w http.ResponseWriter, r *http.Request) error {
+	var request settingsRequest
+	if err := decodeJSON(r, &request); err != nil {
+		return err
+	}
+	if request.Version != 1 {
+		return &statusError{http.StatusBadRequest, "unsupported settings version; reload the app"}
+	}
+	document, err := validatedSettings(request)
+	if err != nil {
+		return &statusError{http.StatusBadRequest, err.Error()}
+	}
+	if err := a.cfg.SaveConfig(document); err != nil {
+		return err
+	}
+	settings, err := a.buildSettings()
+	if err != nil {
+		return err
+	}
+	return writeJSON(w, http.StatusOK, settings)
+}
+
+func (a *App) resetSettings(w http.ResponseWriter, r *http.Request) error {
+	if err := decodeEmpty(r); err != nil {
+		return err
+	}
+	document, err := a.cfg.DefaultConfig()
+	if err != nil {
+		return err
+	}
+	if err := a.cfg.SaveConfig(document); err != nil {
+		return err
+	}
+	settings, err := a.buildSettings()
+	if err != nil {
+		return err
+	}
+	return writeJSON(w, http.StatusOK, settings)
+}
+
+func validatedSettings(request settingsRequest) (config.Document, error) {
+	if request.Keep.RecentDays < 0 || request.Keep.RecentDays > 3650 {
+		return config.Document{}, errors.New("recent protection must be between 0 and 3650 days")
+	}
+	normalize := func(name string, values []string) ([]string, error) {
+		if len(values) > 100 {
+			return nil, fmt.Errorf("%s supports at most 100 entries", name)
+		}
+		result := make([]string, 0, len(values))
+		for _, value := range values {
+			value = strings.TrimSpace(value)
+			if value == "" {
+				continue
+			}
+			if len(value) > 500 {
+				return nil, fmt.Errorf("%s entries must be 500 characters or fewer", name)
+			}
+			result = append(result, value)
+		}
+		return result, nil
+	}
+	deleteRules, err := normalize("delete rules", request.Delete)
+	if err != nil {
+		return config.Document{}, err
+	}
+	archiveRules, err := normalize("archive rules", request.Archive)
+	if err != nil {
+		return config.Document{}, err
+	}
+	ignored, err := normalize("ignored domains", request.Ignore)
+	if err != nil {
+		return config.Document{}, err
+	}
+	for _, domain := range ignored {
+		if len(strings.Fields(domain)) != 1 || strings.ContainsAny(domain, "@/:\\") {
+			return config.Document{}, fmt.Errorf("ignored domain %q must be a domain name only", domain)
+		}
+	}
+	document := config.Document{Keep: request.Keep, Delete: deleteRules, Archive: archiveRules, Ignore: ignored}
+	if _, err := document.CompileFull(); err != nil {
+		return config.Document{}, err
+	}
+	return document, nil
+}
+
+func (a *App) saveCredentials(w http.ResponseWriter, r *http.Request) error {
+	if a.cfg.FixturePath != "" {
+		return &statusError{http.StatusBadRequest, "OAuth credentials are not used in fixture mode"}
+	}
+	var request credentialsRequest
+	if err := decodeJSON(r, &request); err != nil {
+		return err
+	}
+	if len(request.Credentials) == 0 || len(request.Credentials) > 512<<10 {
+		return &statusError{http.StatusBadRequest, "select a credentials JSON file smaller than 512 KB"}
+	}
+	if err := gmailclient.ValidateCredentials(request.Credentials); err != nil {
+		return &statusError{http.StatusBadRequest, err.Error()}
+	}
+	if !a.operation.TryLock() {
+		return &statusError{http.StatusConflict, "another operation is already running"}
+	}
+	defer a.operation.Unlock()
+	if a.authInProgress() {
+		return &statusError{http.StatusConflict, "finish the current Google authorization before replacing credentials"}
+	}
+	if err := gmailclient.RemoveToken(); err != nil {
+		return fmt.Errorf("disconnect old OAuth session: %w", err)
+	}
+	if err := gmailclient.SaveCredentials(a.cfg.CredentialsPath, request.Credentials); err != nil {
+		return &statusError{http.StatusBadRequest, err.Error()}
+	}
+	a.clearClient()
+	return writeJSON(w, http.StatusOK, actionResponse{Message: "OAuth credentials saved securely. Connect with Google to authorize this Desktop app."})
+}
+
+func (a *App) logout(w http.ResponseWriter, r *http.Request) error {
+	if err := decodeEmpty(r); err != nil {
+		return err
+	}
+	if a.cfg.FixturePath != "" {
+		return &statusError{http.StatusBadRequest, "disconnect is not available in fixture mode"}
+	}
+	if !a.operation.TryLock() {
+		return &statusError{http.StatusConflict, "another operation is already running"}
+	}
+	defer a.operation.Unlock()
+	if a.authInProgress() {
+		return &statusError{http.StatusConflict, "finish the current Google authorization before disconnecting"}
+	}
+	if err := gmailclient.RemoveToken(); err != nil {
+		return err
+	}
+	a.clearClient()
+	a.authMu.Lock()
+	a.auth = authStatus{State: "idle"}
+	a.authMu.Unlock()
+	return writeJSON(w, http.StatusOK, actionResponse{Message: "Disconnected. The local OAuth token was removed; credentials were kept."})
+}
+
+func (a *App) clearClient() {
+	a.clientMu.Lock()
+	a.client = nil
+	a.clientMu.Unlock()
+}
+
+func (a *App) authInProgress() bool {
+	a.authMu.RLock()
+	defer a.authMu.RUnlock()
+	return a.auth.State == "starting" || a.auth.State == "waiting"
 }
 
 func (a *App) buildState() (stateResponse, error) {
@@ -269,7 +553,7 @@ func (a *App) buildState() (stateResponse, error) {
 		Authenticated: tokenErr == nil || a.cfg.FixturePath != "",
 		Credentials:   credentialsErr == nil || a.cfg.FixturePath != "",
 		FixtureMode:   a.cfg.FixturePath != "",
-		PurgeAllowed:  a.cfg.AllowPurge,
+		PurgeAllowed:  a.cfg.AllowPurge && (a.cfg.FixturePath != "" || gmailclient.PurgeAuthorized()),
 		Auth:          auth,
 		Stats:         agg.Report,
 		Preview:       p.Report(),
@@ -382,6 +666,10 @@ func (a *App) scan(w http.ResponseWriter, r *http.Request) error {
 	if err != nil {
 		return err
 	}
+	account, err := client.AccountEmail()
+	if err != nil {
+		return err
+	}
 	doc, err := a.cfg.LoadConfig()
 	if err != nil {
 		return err
@@ -390,7 +678,7 @@ func (a *App) scan(w http.ResponseWriter, r *http.Request) error {
 	if err != nil {
 		return err
 	}
-	p := &engine.Pipeline{Store: a.store, Client: client, Keep: compiled.Keep, Rules: compiled.Rules}
+	p := &engine.Pipeline{Store: a.store, Client: client, Keep: compiled.Keep, Rules: compiled.Rules, Account: account, CachePath: a.cfg.CachePath}
 	if err := p.Run(p.ScanStages()...); err != nil {
 		return err
 	}
@@ -430,6 +718,11 @@ func (a *App) trash(w http.ResponseWriter, r *http.Request) error {
 		return &statusError{http.StatusConflict, "another operation is already running"}
 	}
 	defer a.operation.Unlock()
+	lock, err := storage.AcquireMutationLock(a.cfg.CachePath)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = lock.Unlock() }()
 	p, err := a.plan()
 	if err != nil {
 		return err
@@ -444,7 +737,13 @@ func (a *App) trash(w http.ResponseWriter, r *http.Request) error {
 	if err != nil {
 		return err
 	}
+	account, err := client.AccountEmail()
+	if err != nil {
+		return err
+	}
 	p.Client = client
+	p.Account = account
+	p.MutationLockHeld = true
 	if err := p.Run(p.ApplyStages()...); err != nil {
 		return err
 	}
@@ -474,7 +773,11 @@ func (a *App) restore(w http.ResponseWriter, r *http.Request) error {
 	if err != nil {
 		return err
 	}
-	restored, err := (&engine.Reconciler{Store: a.store, CachePath: a.cfg.CachePath}).Undo(client, records)
+	account, err := client.AccountEmail()
+	if err != nil {
+		return err
+	}
+	restored, err := (&engine.Reconciler{Store: a.store, CachePath: a.cfg.CachePath, Account: account}).Undo(client, records)
 	if err != nil {
 		return err
 	}
@@ -486,8 +789,8 @@ func (a *App) purge(w http.ResponseWriter, r *http.Request) error {
 	if err := decodeJSON(r, &req); err != nil {
 		return err
 	}
-	if !a.cfg.AllowPurge {
-		return &statusError{http.StatusForbidden, "permanent deletion is disabled; restart with --allow-purge after authorizing full Gmail access"}
+	if !a.cfg.AllowPurge || (a.cfg.FixturePath == "" && !gmailclient.PurgeAuthorized()) {
+		return &statusError{http.StatusForbidden, "permanent deletion is disabled; run login --allow-permanent-delete, then restart with --allow-purge"}
 	}
 	if req.Confirmation != purgeConfirmation {
 		return &statusError{http.StatusBadRequest, "type EMPTY TRASH PERMANENTLY to confirm"}
@@ -504,7 +807,11 @@ func (a *App) purge(w http.ResponseWriter, r *http.Request) error {
 	if err != nil {
 		return err
 	}
-	if err := (&engine.Reconciler{CachePath: a.cfg.CachePath}).Purge(client, records); err != nil {
+	account, err := client.AccountEmail()
+	if err != nil {
+		return err
+	}
+	if err := (&engine.Reconciler{CachePath: a.cfg.CachePath, Account: account}).Purge(client, records); err != nil {
 		return err
 	}
 	return writeJSON(w, http.StatusOK, actionResponse{Message: "Gmail Trash was emptied permanently. This cannot be undone."})
@@ -517,6 +824,10 @@ func (a *App) login(w http.ResponseWriter, r *http.Request) error {
 	if a.cfg.FixturePath != "" {
 		return &statusError{http.StatusBadRequest, "OAuth is not used in fixture mode"}
 	}
+	if !a.operation.TryLock() {
+		return &statusError{http.StatusConflict, "another operation is already running"}
+	}
+	defer a.operation.Unlock()
 	if _, err := os.Stat(a.cfg.CredentialsPath); err != nil {
 		return &statusError{http.StatusBadRequest, "credentials.json is missing; follow the setup steps shown in the app"}
 	}
@@ -537,7 +848,9 @@ func (a *App) login(w http.ResponseWriter, r *http.Request) error {
 		a.setAuthError(err)
 		return err
 	}
-	cfg, err := gmailclient.LoadConfigWithRedirectAndPurge(a.cfg.CredentialsPath, callback.RedirectURL(), a.cfg.AllowPurge)
+	// Desktop Connect is deliberately never an escalation path. Full access is
+	// granted only by the separately named CLI login flag.
+	cfg, err := gmailclient.LoadConfigWithRedirectAndPurge(a.cfg.CredentialsPath, callback.RedirectURL(), false)
 	if err != nil {
 		_ = callback.Close()
 		a.setAuthError(err)
@@ -546,7 +859,7 @@ func (a *App) login(w http.ResponseWriter, r *http.Request) error {
 	a.authMu.Lock()
 	a.auth = authStatus{State: "waiting"}
 	a.authMu.Unlock()
-	authURL := cfg.AuthCodeURL(oauthState)
+	authURL := gmailclient.AuthorizationURL(cfg, oauthState)
 	go func() {
 		defer func() { _ = callback.Close() }()
 		code, waitErr := callback.WaitForCode(5 * time.Minute)
@@ -554,7 +867,7 @@ func (a *App) login(w http.ResponseWriter, r *http.Request) error {
 			token, exchangeErr := cfg.Exchange(context.Background(), code)
 			if exchangeErr != nil {
 				waitErr = fmt.Errorf("exchange authorization: %w", exchangeErr)
-			} else if saveErr := gmailclient.SaveToken(token); saveErr != nil {
+			} else if saveErr := gmailclient.SaveTokenWithAuthorization(token, false); saveErr != nil {
 				waitErr = fmt.Errorf("save token: %w", saveErr)
 			}
 		}
@@ -563,9 +876,7 @@ func (a *App) login(w http.ResponseWriter, r *http.Request) error {
 			a.auth = authStatus{State: "error", Error: waitErr.Error()}
 		} else {
 			a.auth = authStatus{State: "complete"}
-			a.clientMu.Lock()
-			a.client = nil
-			a.clientMu.Unlock()
+			a.clearClient()
 		}
 		a.authMu.Unlock()
 	}()
