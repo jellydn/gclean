@@ -912,7 +912,7 @@ func (a *App) getClientAndAccount() (gmailclient.Client, string, error) {
 	defer a.clientMu.Unlock()
 	if a.client == nil {
 		if a.cfg.Client == nil {
-			return nil, "", errors.New("Gmail client is not configured")
+			return nil, "", errors.New("gmail client is not configured")
 		}
 		client, err := a.cfg.Client()
 		if err != nil {

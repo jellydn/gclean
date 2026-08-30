@@ -35,7 +35,7 @@ func (r *RealClient) AccountEmail() (string, error) {
 		return "", fmt.Errorf("get Gmail profile: %w", err)
 	}
 	if profile.EmailAddress == "" {
-		return "", errors.New("Gmail profile returned no account identity")
+		return "", errors.New("gmail profile returned no account identity")
 	}
 	return strings.ToLower(profile.EmailAddress), nil
 }
