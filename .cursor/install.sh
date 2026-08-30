@@ -24,13 +24,15 @@ elif command -v sudo >/dev/null 2>&1 && sudo -n true 2>/dev/null; then
 else
   bin_dir="$(go env GOPATH)/bin"
   mkdir -p "$bin_dir"
-  # The Go bin dir is not on PATH by default. Persist it for later terminals
-  # (idempotently) and export it for this run.
-  rc_file="$HOME/.bashrc"
-  [ ! -f "$rc_file" ] && [ -f "$HOME/.profile" ] && rc_file="$HOME/.profile"
-  if ! grep -Fqs "export PATH=\"$bin_dir" "$rc_file" 2>/dev/null; then
-    printf '\n# gclean cloud-agent tools\nexport PATH="%s:$PATH"\n' "$bin_dir" >> "$rc_file"
-  fi
+  # The Go bin dir is not on PATH by default. Persist it for later shells
+  # (idempotently): .bashrc for interactive bash, .profile for login shells
+  # (sh/dash included). Export it for this run too.
+  [ -f "$HOME/.bashrc" ] || [ -f "$HOME/.profile" ] || touch "$HOME/.bashrc"
+  for rc_file in "$HOME/.bashrc" "$HOME/.profile"; do
+    [ -f "$rc_file" ] || continue
+    grep -Fqs "export PATH=\"$bin_dir" "$rc_file" 2>/dev/null || \
+      printf '\n# gclean cloud-agent tools\nexport PATH="%s:$PATH"\n' "$bin_dir" >> "$rc_file"
+  done
   export PATH="$bin_dir:$PATH"
 fi
 
@@ -40,6 +42,9 @@ go mod download
 if ! command -v just >/dev/null 2>&1 \
   || [ "$(just --version 2>/dev/null | awk '{print $2}')" != "$JUST_VERSION" ]; then
   echo "==> Installing just $JUST_VERSION -> $bin_dir"
+  # The official installer refuses to overwrite an existing binary, so remove
+  # any stale one first.
+  $sudo_cmd rm -f "$bin_dir/just"
   curl --proto '=https' --tlsv1.2 -sSf https://just.systems/install.sh \
     | $sudo_cmd bash -s -- --tag "$JUST_VERSION" --to "$bin_dir"
 else
@@ -47,7 +52,7 @@ else
 fi
 
 if ! command -v golangci-lint >/dev/null 2>&1 \
-  || [ "$(golangci-lint version 2>/dev/null | sed -n 's/.*version \([^ ]*\).*/\1/p')" != "$GOLANGCI_LINT_VERSION" ]; then
+  || [ "$(golangci-lint version 2>/dev/null | sed -n 's/.*version v\?\([^ ]*\).*/\1/p')" != "${GOLANGCI_LINT_VERSION#v}" ]; then
   echo "==> Installing golangci-lint $GOLANGCI_LINT_VERSION -> $bin_dir"
   tmp_bin="$(mktemp -d)"
   GOBIN="$tmp_bin" go install \

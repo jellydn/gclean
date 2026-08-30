@@ -19,7 +19,7 @@ lint: lint-emails
 	@echo "→ go build ./..."
 	@go build ./...
 	@echo "→ golangci-lint run ./... (optional)"
-	@command -v golangci-lint >/dev/null 2>&1 && golangci-lint run ./... || echo "  (golangci-lint not installed — skipping)"
+	@if command -v golangci-lint >/dev/null 2>&1; then golangci-lint run ./...; else echo "  (golangci-lint not installed — skipping)"; fi
 
 build:
 	@go build ./...
