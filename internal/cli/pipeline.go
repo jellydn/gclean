@@ -258,8 +258,8 @@ func newPurgeCmd(out, errOut io.Writer) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			rc := engine.Reconciler{CachePath: cache}
-			if err := rc.Purge(client, records); err != nil {
+			journal := engine.Reconciler{CachePath: cache, ReadBack: client}
+			if _, err := journal.Apply(engine.Intent{Mutation: engine.MutationPurge, Records: records}, client.EmptyTrash); err != nil {
 				return err
 			}
 			_, _ = fmt.Fprintln(out, "Trash emptied. Storage reclaimed from Gmail's side.")
@@ -298,12 +298,19 @@ func newUndoCmd(out, errOut io.Writer) *cobra.Command {
 				return err
 			}
 			defer func() { _ = store.Close() }()
-			rc := engine.Reconciler{Store: store, CachePath: cache}
-			restored, err := rc.Undo(client, records)
+			ids := make([]string, 0, len(records))
+			for _, record := range records {
+				ids = append(ids, record.ID)
+			}
+			journal := engine.Reconciler{Store: store, CachePath: cache, ReadBack: client}
+			outcome, err := journal.Apply(engine.Intent{Mutation: engine.MutationRestore, Records: records}, func() error {
+				_, err := client.RestoreFromTrash(ids)
+				return err
+			})
 			if err != nil {
 				return err
 			}
-			_, _ = fmt.Fprintf(out, "Restored %d messages from Trash.\n", restored)
+			_, _ = fmt.Fprintf(out, "Restored %d messages from Trash.\n", len(outcome.Moved))
 			return nil
 		},
 	}

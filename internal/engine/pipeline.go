@@ -124,9 +124,8 @@ func (p *Pipeline) loadPlan(pl *Pipeline) error {
 }
 
 // applyTrash moves the delete cohort to Trash and stashes the originals for
-// undo. It is the ONLY stage that performs Gmail mutation. Reconcile-after-
-// failure lives in Reconciler; this stage builds one from the pipeline's
-// local-state dependencies and reports the trashed subset back onto the
+// undo. It is the ONLY stage that performs Gmail mutation. The mutation
+// journal owns reconciliation and reports the observed subset back onto the
 // pipeline state for the CLI to render.
 func (p *Pipeline) applyTrash(pl *Pipeline) error {
 	ids := []string{}
@@ -146,41 +145,13 @@ func (p *Pipeline) applyTrash(pl *Pipeline) error {
 			return fmt.Errorf("save undo cache: %w", err)
 		}
 	}
-	rc := &Reconciler{Store: pl.Store, CachePath: pl.CachePath}
-	trashErr := pl.Client.TrashMessages(ids)
-	if trashErr != nil {
-		// Reconcile a partial failure: find which messages actually made it
-		// to Trash server-side, trim the undo cache and the local mark to
-		// match, then fail loudly so the user knows the operation was
-		// partial. Without this, Gmail state and local state silently drift.
-		trashed, kept, rerr := rc.ReconcileTrashFailure(pl.Client, toTrash, ids, "trash", trashErr)
-		if rerr != nil {
-			return rerr
-		}
-		pl.trashedIDs, pl.trashedRecords = trashed, kept
-		switch {
-		case len(trashed) == 0:
-			return fmt.Errorf("trash: no messages moved to Trash: %w", trashErr)
-		case len(trashed) < len(ids):
-			return fmt.Errorf("trash partially applied: %d of %d messages moved to Trash: %w", len(trashed), len(ids), trashErr)
-		default:
-			return fmt.Errorf("trash: %w", trashErr)
-		}
-	}
-	if err := pl.Store.MarkTrashed(ids); err != nil {
-		// Gmail moved the cohort but the local mark failed; reconcile against
-		// Gmail's actual state so the store rows and undo cache don't drift
-		// (retry would otherwise die on the existing undo cache).
-		trashed, kept, rerr := rc.ReconcileTrashFailure(pl.Client, toTrash, ids, "mark trashed", err)
-		if rerr != nil {
-			return rerr
-		}
-		pl.trashedIDs, pl.trashedRecords = trashed, kept
-		return fmt.Errorf("mark trashed: %w", err)
-	}
-	pl.trashedIDs = ids
-	pl.trashedRecords = toTrash
-	return nil
+	journal := &Reconciler{Store: pl.Store, CachePath: pl.CachePath, ReadBack: pl.Client}
+	outcome, err := journal.Apply(Intent{Mutation: MutationTrash, Records: toTrash}, func() error {
+		return pl.Client.TrashMessages(ids)
+	})
+	pl.trashedIDs = outcome.Moved
+	pl.trashedRecords = outcome.MovedRecords
+	return err
 }
 
 // Exported accessors for the CLI to render output after a run.
