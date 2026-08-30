@@ -689,10 +689,7 @@ func TestUndo_PartialRestoreReconciles(t *testing.T) {
 	client.FailRestoreAfter = 1 // restores the first id, then fails
 
 	journal := engine.Reconciler{Store: store, CachePath: cachePath, Client: client}
-	_, err = journal.Apply(engine.Intent{Mutation: engine.MutationRestore, Records: records}, func() error {
-		_, err := client.RestoreFromTrash([]string{"m1", "m2"})
-		return err
-	})
+	_, err = journal.Apply(engine.Intent{Mutation: engine.MutationRestore, Records: records})
 	if err == nil || !strings.Contains(err.Error(), "partially applied") {
 		t.Fatalf("want partial-restore error, got %v", err)
 	}
@@ -749,10 +746,7 @@ func TestUndo_AfterPartialPurgeSkipsDeletedRestoresSurvivors(t *testing.T) {
 	client.Delete([]string{"m1"})
 
 	journal := engine.Reconciler{Store: store, CachePath: cachePath, Client: client}
-	if _, err := journal.Apply(engine.Intent{Mutation: engine.MutationRestore, Records: records}, func() error {
-		_, err := client.RestoreFromTrash([]string{"m1", "m2"})
-		return err
-	}); err != nil {
+	if _, err := journal.Apply(engine.Intent{Mutation: engine.MutationRestore, Records: records}); err != nil {
 		t.Fatalf("undo after partial purge: %v", err)
 	}
 
@@ -790,7 +784,7 @@ func TestPurge_PartialEmptyReconciles(t *testing.T) {
 	client.FailEmptyKeep = map[string]bool{"m2": true} // m1 purged, m2 still in Trash
 
 	journal := engine.Reconciler{CachePath: cachePath, Client: client}
-	_, err := journal.Apply(engine.Intent{Mutation: engine.MutationPurge, Records: records}, client.EmptyTrash)
+	_, err := journal.Apply(engine.Intent{Mutation: engine.MutationPurge, Records: records})
 	if err == nil || !strings.Contains(err.Error(), "partially applied") {
 		t.Fatalf("want partial-purge error, got %v", err)
 	}
@@ -879,7 +873,7 @@ func TestPurge_AllRecordsPurgedRemovesCache(t *testing.T) {
 	client.FailEmptyKeep = map[string]bool{} // everything purged, but EmptyTrash failed on a later page
 
 	journal := engine.Reconciler{CachePath: cachePath, Client: client}
-	_, err := journal.Apply(engine.Intent{Mutation: engine.MutationPurge, Records: records}, client.EmptyTrash)
+	_, err := journal.Apply(engine.Intent{Mutation: engine.MutationPurge, Records: records})
 	if err == nil {
 		t.Fatalf("want purge error, got nil")
 	}

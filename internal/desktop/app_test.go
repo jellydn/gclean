@@ -98,6 +98,11 @@ func TestDesktopRefusesCrossAccountRestoreWithoutLosingUndo(t *testing.T) {
 
 	fake.SetAccountEmail("different-account")
 	var apiError map[string]string
+	doAPI(t, app, server.URL, http.MethodGet, "/api/state", nil, &apiError, http.StatusInternalServerError)
+	if !strings.Contains(apiError["error"], "belongs to Gmail account") {
+		t.Fatalf("cross-account state error = %q", apiError["error"])
+	}
+	apiError = nil
 	doAPI(t, app, server.URL, http.MethodPost, "/api/restore", actionRequest{Confirmation: restoreConfirmation}, &apiError, http.StatusInternalServerError)
 	if !strings.Contains(apiError["error"], "undo cache belongs") {
 		t.Fatalf("cross-account error = %q", apiError["error"])
@@ -188,6 +193,17 @@ func TestSettingsAPIValidatesPersistsAndResetsCLIConfig(t *testing.T) {
 	doAPI(t, app, server.URL, http.MethodPost, "/api/settings/reset", map[string]any{}, &settings, http.StatusOK)
 	if settings.Keep != engine.DefaultKeep() || len(settings.Delete) != 3 {
 		t.Fatalf("reset settings = %+v", settings)
+	}
+}
+
+func TestValidatedSettingsRejectsMalformedDomains(t *testing.T) {
+	for _, domain := range []string{".", "foo..example", "-invalid.example", "invalid-.example", "not_a_domain.example"} {
+		t.Run(domain, func(t *testing.T) {
+			_, err := validatedSettings(settingsRequest{Keep: engine.DefaultKeep(), Ignore: []string{domain}})
+			if err == nil || !strings.Contains(err.Error(), "domain name only") {
+				t.Fatalf("validatedSettings(%q) error = %v, want domain validation error", domain, err)
+			}
+		})
 	}
 }
 

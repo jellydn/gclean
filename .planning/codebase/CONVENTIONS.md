@@ -13,16 +13,16 @@
 
 ## Package-level conventions
 
-- **`internal/engine` is pure** — no I/O, no clocks except passed-in
-  arguments. This is a documented invariant (`internal/engine/classifier.go`
-  package doc) so the decision logic is unit-testable against fixtures.
+- **Engine decision logic is pure** — classifier, evaluator, protector, and
+  planner use no I/O or clocks except passed-in arguments. `Pipeline` and
+  `Reconciler` are the application orchestration boundaries: they persist via
+  `storage` and invoke Gmail through narrow engine-owned interfaces.
 - **`internal/config` → `engine` only**; `engine` never imports `config`.
-- **`internal/gmailclient` is the only package that touches Gmail.** The
-  rest of the codebase depends on the `Client` interface
-  (`internal/gmailclient/client.go`), never on `RealClient`/`FakeClient`
-  concretely.
-- **The engine declares its own narrow `Gmailer` interface** rather than
-  importing `gmailclient` (`internal/engine/pipeline.go`).
+- **`internal/gmailclient` is the only package that imports the Gmail API.**
+  The rest of the codebase depends on interfaces, never on
+  `RealClient`/`FakeClient` concretely.
+- **The engine declares narrow `MessageReader` and `MutationClient`
+  interfaces** rather than importing `gmailclient` (`internal/engine`).
 
 ## The email-literal rule (CRITICAL)
 

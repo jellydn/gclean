@@ -139,9 +139,11 @@ function render() {
 	$("selected-count").textContent =
 		`${state.preview.DeleteCount.toLocaleString()} messages`;
 	$("open-trash").disabled = !connected || !state.preview.DeleteCount;
-	$("undo-copy").textContent = state.undoCount
-		? `${state.undoCount.toLocaleString()} messages from the last cleanup can be restored.`
-		: "No gclean batch is currently waiting in Trash.";
+	$("undo-copy").textContent = state.recoveryWarning
+		? `Recovery is paused: ${state.recoveryWarning}`
+		: state.undoCount
+			? `${state.undoCount.toLocaleString()} messages from the last cleanup can be restored.`
+			: "No gclean batch is currently waiting in Trash.";
 	$("restore").disabled = !connected || !state.undoCount;
 	$("open-purge").disabled = !connected || !state.purgeAllowed;
 	$("open-purge").title = state.purgeAllowed

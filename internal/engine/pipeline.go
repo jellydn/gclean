@@ -115,6 +115,11 @@ func (p *Pipeline) fetchAndClassify(pl *Pipeline) error {
 
 // loadPlan runs the planner and persists verdicts. It never touches Gmail.
 func (p *Pipeline) loadPlan(pl *Pipeline) error {
+	if pl.Account != "" {
+		if err := pl.Store.BindAccount(pl.Account); err != nil {
+			return err
+		}
+	}
 	classified, err := pl.Store.AllClassified()
 	if err != nil {
 		return err
@@ -149,49 +154,42 @@ func (p *Pipeline) loadPlan(pl *Pipeline) error {
 // journal owns reconciliation and reports the observed subset back onto the
 // pipeline state for the CLI to render.
 func (p *Pipeline) applyTrash(pl *Pipeline) error {
-	if err := pl.Store.BindAccount(pl.Account); err != nil {
-		return err
-	}
-	var lock *storage.MutationLock
-	if !pl.MutationLockHeld {
-		var err error
-		lock, err = storage.AcquireMutationLock(pl.CachePath)
-		if err != nil {
-			return err
-		}
-		defer func() { _ = lock.Unlock() }()
-	}
-	ids := []string{}
 	toTrash := []storage.StoredMessage{}
 	for _, d := range pl.decisions {
 		if d.Verdict != models.VerdictDelete {
 			continue
 		}
-		ids = append(ids, d.Message.ID)
 		toTrash = append(toTrash, storage.FromClassified(d.Classified, models.VerdictDelete))
 	}
-	if len(ids) == 0 {
+	if len(toTrash) == 0 {
 		return nil
 	}
-	if pl.CachePath != "" {
-		if err := storage.SaveUndoCacheForAccount(pl.CachePath, pl.Account, toTrash); err != nil {
-			return fmt.Errorf("save undo cache: %w", err)
-		}
+	journal := &Reconciler{
+		Store:            pl.Store,
+		CachePath:        pl.CachePath,
+		Account:          pl.Account,
+		Client:           pl.Mutations,
+		MutationLockHeld: pl.MutationLockHeld,
 	}
-	journal := &Reconciler{Store: pl.Store, CachePath: pl.CachePath, Account: pl.Account, Client: pl.Mutations}
-	outcome, err := journal.Apply(Intent{Mutation: MutationTrash, Records: toTrash}, func() error {
-		return pl.Mutations.TrashMessages(ids)
-	})
+	outcome, err := journal.Apply(Intent{Mutation: MutationTrash, Records: toTrash})
 	pl.trashedIDs = outcome.Moved
 	pl.trashedRecords = outcome.MovedRecords
 	return err
 }
 
-// Exported accessors for the CLI to render output after a run.
-func (p *Pipeline) Scanned() int                            { return p.scanned }
-func (p *Pipeline) Report() models.DryRunReport             { return p.report }
-func (p *Pipeline) Decisions() []models.Decision            { return p.decisions }
-func (p *Pipeline) TrashedIDs() []string                    { return p.trashedIDs }
+// Scanned returns the number of metadata records fetched by the scan stage.
+func (p *Pipeline) Scanned() int { return p.scanned }
+
+// Report returns the latest plan's aggregate dry-run report.
+func (p *Pipeline) Report() models.DryRunReport { return p.report }
+
+// Decisions returns the latest plan's per-message decisions.
+func (p *Pipeline) Decisions() []models.Decision { return p.decisions }
+
+// TrashedIDs returns the IDs observed in Trash after the apply stage.
+func (p *Pipeline) TrashedIDs() []string { return p.trashedIDs }
+
+// TrashedRecords returns the local records observed in Trash after apply.
 func (p *Pipeline) TrashedRecords() []storage.StoredMessage { return p.trashedRecords }
 
 func loadSelectedSenders(path string) (map[string]struct{}, error) {

@@ -34,6 +34,7 @@ func AcquireMutationLock(cachePath string) (*MutationLock, error) {
 	return &MutationLock{file: file}, nil
 }
 
+// Unlock releases the cross-process mutation lock.
 func (l *MutationLock) Unlock() error {
 	if l == nil || l.file == nil {
 		return nil

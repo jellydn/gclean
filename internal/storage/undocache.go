@@ -48,6 +48,7 @@ func SaveUndoCache(path string, recs []StoredMessage) error {
 	return SaveUndoCacheForAccount(path, "", recs)
 }
 
+// SaveUndoCacheForAccount writes a new account-bound recovery batch.
 func SaveUndoCacheForAccount(path, account string, recs []StoredMessage) error {
 	return writeUndoCache(path, account, recs, false)
 }
@@ -61,6 +62,7 @@ func ReplaceUndoCache(path string, recs []StoredMessage) error {
 	return ReplaceUndoCacheForAccount(path, "", recs)
 }
 
+// ReplaceUndoCacheForAccount atomically replaces an account-bound batch.
 func ReplaceUndoCacheForAccount(path, account string, recs []StoredMessage) error {
 	return writeUndoCache(path, account, recs, true)
 }
@@ -74,6 +76,8 @@ func ReplaceOrRemoveUndoCache(path string, recs []StoredMessage) error {
 	return ReplaceOrRemoveUndoCacheForAccount(path, "", recs)
 }
 
+// ReplaceOrRemoveUndoCacheForAccount replaces a non-empty account-bound
+// batch, or removes the cache when no recoverable records remain.
 func ReplaceOrRemoveUndoCacheForAccount(path, account string, recs []StoredMessage) error {
 	if len(recs) == 0 {
 		if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
@@ -159,12 +163,18 @@ func LoadUndoBatch(path string) (UndoBatch, error) {
 // ValidateUndoAccount prevents a cache from one Gmail account (or an unowned
 // legacy cache) from being consumed while another account is authenticated.
 func ValidateUndoAccount(path, account string) error {
-	if account == "" {
-		return nil
-	}
 	batch, err := LoadUndoBatch(path)
-	if err != nil || len(batch.Records) == 0 {
+	if err != nil {
 		return err
+	}
+	return ValidateUndoBatchAccount(batch, account)
+}
+
+// ValidateUndoBatchAccount validates an already-loaded batch. Callers that
+// hold the mutation lock can avoid a second read of the cache.
+func ValidateUndoBatchAccount(batch UndoBatch, account string) error {
+	if account == "" || len(batch.Records) == 0 {
+		return nil
 	}
 	if batch.Account == "" {
 		return errors.New("undo cache predates account binding; restore it with the previous gclean version or remove it before continuing")

@@ -95,17 +95,18 @@ type messageRow struct {
 }
 
 type stateResponse struct {
-	Authenticated bool                `json:"authenticated"`
-	Credentials   bool                `json:"credentialsPresent"`
-	FixtureMode   bool                `json:"fixtureMode"`
-	PurgeAllowed  bool                `json:"purgeAllowed"`
-	Auth          authStatus          `json:"auth"`
-	Stats         models.StatsReport  `json:"stats"`
-	Preview       models.DryRunReport `json:"preview"`
-	PreviewID     string              `json:"previewId"`
-	Senders       []senderRow         `json:"senders"`
-	Messages      []messageRow        `json:"messages"`
-	UndoCount     int                 `json:"undoCount"`
+	Authenticated   bool                `json:"authenticated"`
+	Credentials     bool                `json:"credentialsPresent"`
+	FixtureMode     bool                `json:"fixtureMode"`
+	PurgeAllowed    bool                `json:"purgeAllowed"`
+	Auth            authStatus          `json:"auth"`
+	Stats           models.StatsReport  `json:"stats"`
+	Preview         models.DryRunReport `json:"preview"`
+	PreviewID       string              `json:"previewId"`
+	Senders         []senderRow         `json:"senders"`
+	Messages        []messageRow        `json:"messages"`
+	UndoCount       int                 `json:"undoCount"`
+	RecoveryWarning string              `json:"recoveryWarning,omitempty"`
 }
 
 type actionRequest struct {
@@ -448,7 +449,7 @@ func validatedSettings(request settingsRequest) (config.Document, error) {
 		return config.Document{}, err
 	}
 	for _, domain := range ignored {
-		if len(strings.Fields(domain)) != 1 || strings.ContainsAny(domain, "@/:\\") {
+		if !validDomainName(domain) {
 			return config.Document{}, fmt.Errorf("ignored domain %q must be a domain name only", domain)
 		}
 	}
@@ -457,6 +458,23 @@ func validatedSettings(request settingsRequest) (config.Document, error) {
 		return config.Document{}, err
 	}
 	return document, nil
+}
+
+func validDomainName(domain string) bool {
+	if len(domain) == 0 || len(domain) > 253 || strings.HasPrefix(domain, ".") || strings.HasSuffix(domain, ".") {
+		return false
+	}
+	for _, label := range strings.Split(domain, ".") {
+		if len(label) == 0 || len(label) > 63 || label[0] == '-' || label[len(label)-1] == '-' {
+			return false
+		}
+		for _, char := range label {
+			if (char < 'a' || char > 'z') && (char < 'A' || char > 'Z') && (char < '0' || char > '9') && char != '-' {
+				return false
+			}
+		}
+	}
+	return true
 }
 
 func (a *App) saveCredentials(w http.ResponseWriter, r *http.Request) error {
@@ -527,7 +545,22 @@ func (a *App) authInProgress() bool {
 }
 
 func (a *App) buildState() (stateResponse, error) {
-	p, err := a.plan()
+	_, tokenErr := gmailclient.LoadToken()
+	authenticated := tokenErr == nil || a.cfg.FixturePath != ""
+	account := ""
+	if authenticated {
+		_, resolvedAccount, err := a.getClientAndAccount()
+		if err != nil {
+			return stateResponse{}, err
+		}
+		account = resolvedAccount
+	}
+	lock, err := storage.AcquireMutationLock(a.cfg.CachePath)
+	if err != nil {
+		return stateResponse{}, err
+	}
+	defer func() { _ = lock.Unlock() }()
+	p, err := a.plan(account)
 	if err != nil {
 		return stateResponse{}, err
 	}
@@ -535,32 +568,38 @@ func (a *App) buildState() (stateResponse, error) {
 	if err != nil {
 		return stateResponse{}, err
 	}
-	records, err := storage.LoadUndoCache(a.cfg.CachePath)
+	batch, err := storage.LoadUndoBatch(a.cfg.CachePath)
 	if err != nil {
 		return stateResponse{}, fmt.Errorf("read undo cache: %w", err)
+	}
+	undoCount := len(batch.Records)
+	recoveryWarning := ""
+	if err := storage.ValidateUndoBatchAccount(batch, account); err != nil {
+		undoCount = 0
+		recoveryWarning = err.Error()
 	}
 	a.authMu.RLock()
 	auth := a.auth
 	a.authMu.RUnlock()
 	_, credentialsErr := os.Stat(a.cfg.CredentialsPath)
-	_, tokenErr := gmailclient.LoadToken()
 	allDecisions, err := a.unrestrictedDecisions()
 	if err != nil {
 		return stateResponse{}, err
 	}
 	rows, messages := a.rows(allDecisions, p.Decisions())
 	return stateResponse{
-		Authenticated: tokenErr == nil || a.cfg.FixturePath != "",
-		Credentials:   credentialsErr == nil || a.cfg.FixturePath != "",
-		FixtureMode:   a.cfg.FixturePath != "",
-		PurgeAllowed:  a.cfg.AllowPurge && (a.cfg.FixturePath != "" || gmailclient.PurgeAuthorized()),
-		Auth:          auth,
-		Stats:         agg.Report,
-		Preview:       p.Report(),
-		PreviewID:     previewID(p.Decisions()),
-		Senders:       rows,
-		Messages:      messages,
-		UndoCount:     len(records),
+		Authenticated:   authenticated,
+		Credentials:     credentialsErr == nil || a.cfg.FixturePath != "",
+		FixtureMode:     a.cfg.FixturePath != "",
+		PurgeAllowed:    a.cfg.AllowPurge && (a.cfg.FixturePath != "" || gmailclient.PurgeAuthorized()),
+		Auth:            auth,
+		Stats:           agg.Report,
+		Preview:         p.Report(),
+		PreviewID:       previewID(p.Decisions()),
+		Senders:         rows,
+		Messages:        messages,
+		UndoCount:       undoCount,
+		RecoveryWarning: recoveryWarning,
 	}, nil
 }
 
@@ -624,7 +663,7 @@ func (a *App) unrestrictedDecisions() ([]models.Decision, error) {
 	return decisions, nil
 }
 
-func (a *App) plan() (*engine.Pipeline, error) {
+func (a *App) plan(account string) (*engine.Pipeline, error) {
 	doc, err := a.cfg.LoadConfig()
 	if err != nil {
 		return nil, err
@@ -642,6 +681,7 @@ func (a *App) plan() (*engine.Pipeline, error) {
 	a.selectMu.RUnlock()
 	p := &engine.Pipeline{
 		Store:            a.store,
+		Account:          account,
 		Keep:             compiled.Keep,
 		Rules:            compiled.Rules,
 		CachePath:        a.cfg.CachePath,
@@ -662,11 +702,7 @@ func (a *App) scan(w http.ResponseWriter, r *http.Request) error {
 		return &statusError{http.StatusConflict, "another operation is already running"}
 	}
 	defer a.operation.Unlock()
-	client, err := a.getClient()
-	if err != nil {
-		return err
-	}
-	account, err := client.AccountEmail()
+	client, account, err := a.getClientAndAccount()
 	if err != nil {
 		return err
 	}
@@ -723,7 +759,11 @@ func (a *App) trash(w http.ResponseWriter, r *http.Request) error {
 		return err
 	}
 	defer func() { _ = lock.Unlock() }()
-	p, err := a.plan()
+	client, account, err := a.getClientAndAccount()
+	if err != nil {
+		return err
+	}
+	p, err := a.plan(account)
 	if err != nil {
 		return err
 	}
@@ -732,14 +772,6 @@ func (a *App) trash(w http.ResponseWriter, r *http.Request) error {
 	}
 	if req.PreviewID == "" || req.PreviewID != previewID(p.Decisions()) {
 		return &statusError{http.StatusConflict, "preview changed; review the refreshed selection before continuing"}
-	}
-	client, err := a.getClient()
-	if err != nil {
-		return err
-	}
-	account, err := client.AccountEmail()
-	if err != nil {
-		return err
 	}
 	p.Mutations = client
 	p.Account = account
@@ -762,41 +794,15 @@ func (a *App) restore(w http.ResponseWriter, r *http.Request) error {
 		return &statusError{http.StatusConflict, "another operation is already running"}
 	}
 	defer a.operation.Unlock()
-	client, err := a.getClient()
+	client, account, err := a.getClientAndAccount()
 	if err != nil {
 		return err
-	}
-	account, err := client.AccountEmail()
-	if err != nil {
-		return err
-	}
-	lock, err := storage.AcquireMutationLock(a.cfg.CachePath)
-	if err != nil {
-		return err
-	}
-	defer func() { _ = lock.Unlock() }()
-	batch, err := storage.LoadUndoBatch(a.cfg.CachePath)
-	if err != nil {
-		return err
-	}
-	if len(batch.Records) == 0 {
-		return &statusError{http.StatusBadRequest, "there is no gclean batch to restore"}
-	}
-	if err := storage.ValidateUndoAccount(a.cfg.CachePath, account); err != nil {
-		return err
-	}
-	if err := a.store.BindAccount(account); err != nil {
-		return err
-	}
-	ids := make([]string, 0, len(batch.Records))
-	for _, record := range batch.Records {
-		ids = append(ids, record.ID)
 	}
 	journal := engine.Reconciler{Store: a.store, CachePath: a.cfg.CachePath, Account: account, Client: client}
-	outcome, err := journal.Apply(engine.Intent{Mutation: engine.MutationRestore, Records: batch.Records}, func() error {
-		_, restoreErr := client.RestoreFromTrash(ids)
-		return restoreErr
-	})
+	outcome, err := journal.Apply(engine.Intent{Mutation: engine.MutationRestore})
+	if errors.Is(err, engine.ErrNothingToRestore) {
+		return &statusError{http.StatusBadRequest, "there is no gclean batch to restore"}
+	}
 	if err != nil {
 		return err
 	}
@@ -818,28 +824,12 @@ func (a *App) purge(w http.ResponseWriter, r *http.Request) error {
 		return &statusError{http.StatusConflict, "another operation is already running"}
 	}
 	defer a.operation.Unlock()
-	client, err := a.getClient()
+	client, account, err := a.getClientAndAccount()
 	if err != nil {
-		return err
-	}
-	account, err := client.AccountEmail()
-	if err != nil {
-		return err
-	}
-	lock, err := storage.AcquireMutationLock(a.cfg.CachePath)
-	if err != nil {
-		return err
-	}
-	defer func() { _ = lock.Unlock() }()
-	batch, err := storage.LoadUndoBatch(a.cfg.CachePath)
-	if err != nil {
-		return err
-	}
-	if err := storage.ValidateUndoAccount(a.cfg.CachePath, account); err != nil {
 		return err
 	}
 	journal := engine.Reconciler{CachePath: a.cfg.CachePath, Account: account, Client: client}
-	if _, err := journal.Apply(engine.Intent{Mutation: engine.MutationPurge, Records: batch.Records}, client.EmptyTrash); err != nil {
+	if _, err := journal.Apply(engine.Intent{Mutation: engine.MutationPurge}); err != nil {
 		return err
 	}
 	return writeJSON(w, http.StatusOK, actionResponse{Message: "Gmail Trash was emptied permanently. This cannot be undone."})
@@ -917,21 +907,24 @@ func (a *App) setAuthError(err error) {
 	a.authMu.Unlock()
 }
 
-func (a *App) getClient() (gmailclient.Client, error) {
+func (a *App) getClientAndAccount() (gmailclient.Client, string, error) {
 	a.clientMu.Lock()
 	defer a.clientMu.Unlock()
-	if a.client != nil {
-		return a.client, nil
+	if a.client == nil {
+		if a.cfg.Client == nil {
+			return nil, "", errors.New("Gmail client is not configured")
+		}
+		client, err := a.cfg.Client()
+		if err != nil {
+			return nil, "", err
+		}
+		a.client = client
 	}
-	if a.cfg.Client == nil {
-		return nil, errors.New("Gmail client is not configured")
-	}
-	client, err := a.cfg.Client()
+	account, err := a.client.AccountEmail()
 	if err != nil {
-		return nil, err
+		return nil, "", err
 	}
-	a.client = client
-	return client, nil
+	return a.client, account, nil
 }
 
 func previewID(decisions []models.Decision) string {
