@@ -87,7 +87,7 @@ jobs:
             codesign -dv --verbose=2 "$work/gclean" 2>&1 | grep -F 'Signature=adhoc'
           done
       - name: Upload workflow artifact
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: gclean-desktop-${{ env.VERSION }}
           path: |
@@ -108,7 +108,7 @@ jobs:
       contents: write
     steps:
       - name: Download packaged binaries
-        uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0 # v5
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
         with:
           pattern: gclean-desktop-*
           path: dist
