@@ -12,6 +12,10 @@ import "gclean/internal/models"
 //   - RealClient   — talks to actual Gmail over HTTPS+OAuth for reads and
 //     batched, retrying mutations
 type Client interface {
+	// AccountEmail returns the authenticated Gmail account identity used to
+	// bind local metadata and undo state.
+	AccountEmail() (string, error)
+
 	// ListMessages returns messages matching `query` (same syntax as the
 	// Gmail web search bar) up to `max`. max==0 means "all".
 	ListMessages(query string, max int) ([]*models.Message, error)

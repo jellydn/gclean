@@ -9,18 +9,27 @@ import (
 	"gclean/internal/storage"
 )
 
-type journalClient map[string]bool
+type journalClient struct {
+	trashed  map[string]bool
+	trashIDs []string
+	trashErr error
+}
 
-func (state journalClient) TrashMessages(ids []string) error { return nil }
+func (state *journalClient) TrashMessages(ids []string) error {
+	for _, id := range state.trashIDs {
+		state.trashed[id] = true
+	}
+	return state.trashErr
+}
 
-func (state journalClient) RestoreFromTrash(ids []string) ([]string, error) { return ids, nil }
+func (state *journalClient) RestoreFromTrash(ids []string) ([]string, error) { return ids, nil }
 
-func (state journalClient) EmptyTrash() error { return nil }
+func (state *journalClient) EmptyTrash() error { return nil }
 
-func (state journalClient) InTrash(ids []string) ([]string, error) {
+func (state *journalClient) InTrash(ids []string) ([]string, error) {
 	trashed := make([]string, 0, len(ids))
 	for _, id := range ids {
-		if state[id] {
+		if state.trashed[id] {
 			trashed = append(trashed, id)
 		}
 	}
@@ -41,16 +50,14 @@ func TestMutationJournalApplyReportsAndCommitsPartialTrash(t *testing.T) {
 		}
 	}
 	cachePath := filepath.Join(t.TempDir(), "undo-cache.json")
-	if err := storage.SaveUndoCache(cachePath, records); err != nil {
-		t.Fatal(err)
+	serverState := &journalClient{
+		trashed:  map[string]bool{},
+		trashIDs: []string{"m1"},
+		trashErr: errors.New("injected failure"),
 	}
-	serverState := journalClient{}
 	journal := Reconciler{Store: store, CachePath: cachePath, Client: serverState}
 
-	outcome, err := journal.Apply(Intent{Mutation: MutationTrash, Records: records}, func() error {
-		serverState["m1"] = true
-		return errors.New("injected failure")
-	})
+	outcome, err := journal.Apply(Intent{Mutation: MutationTrash, Records: records})
 	if err == nil {
 		t.Fatal("Apply() error = nil, want partial mutation error")
 	}

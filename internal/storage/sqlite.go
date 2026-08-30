@@ -6,6 +6,7 @@ package storage
 import (
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"time"
 
@@ -38,6 +39,10 @@ CREATE INDEX IF NOT EXISTS idx_messages_sender ON messages(sender_email);
 CREATE INDEX IF NOT EXISTS idx_messages_date ON messages(date);
 CREATE INDEX IF NOT EXISTS idx_messages_junk ON messages(is_junk);
 CREATE INDEX IF NOT EXISTS idx_messages_verdict ON messages(verdict);
+CREATE TABLE IF NOT EXISTS app_metadata (
+    key TEXT PRIMARY KEY,
+    value TEXT NOT NULL
+);
 `
 
 // Store wraps *sql.DB. Construct via Open(path).
@@ -70,6 +75,59 @@ func (s *Store) Upsert(m StoredMessage) error {
 	if err := upsertMsg(tx, m); err != nil {
 		_ = tx.Rollback()
 		return err
+	}
+	return tx.Commit()
+}
+
+// BindAccount records which Gmail account owns this database and refuses to
+// mix data from another or from an unowned legacy database containing rows.
+func (s *Store) BindAccount(account string) error {
+	if account == "" {
+		return nil
+	}
+	tx, err := s.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback() }()
+	var existing string
+	err = tx.QueryRow(`SELECT value FROM app_metadata WHERE key='gmail_account'`).Scan(&existing)
+	switch {
+	case err == nil && existing != account:
+		return fmt.Errorf("local database belongs to Gmail account %q, not %q; use a separate GCLEAN_DB_PATH", existing, account)
+	case err == nil:
+		return tx.Commit()
+	case err != sql.ErrNoRows:
+		return err
+	}
+	var count int
+	if err := tx.QueryRow(`SELECT COUNT(*) FROM messages`).Scan(&count); err != nil {
+		return err
+	}
+	if count > 0 {
+		return errors.New("existing database has no Gmail account identity; use a new GCLEAN_DB_PATH and rescan")
+	}
+	if _, err := tx.Exec(`INSERT INTO app_metadata(key, value) VALUES('gmail_account', ?)`, account); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+// ReplaceAll transactionally replaces the last scan. This removes messages
+// that disappeared from Gmail instead of accumulating stale rows across scans.
+func (s *Store) ReplaceAll(messages []StoredMessage) error {
+	tx, err := s.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback() }()
+	if _, err := tx.Exec(`DELETE FROM messages`); err != nil {
+		return err
+	}
+	for _, message := range messages {
+		if err := upsertMsg(tx, message); err != nil {
+			return err
+		}
 	}
 	return tx.Commit()
 }

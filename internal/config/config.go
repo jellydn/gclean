@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 
 	"gclean/internal/engine"
+	"gclean/internal/fileutil"
 )
 
 const defaultConfig = `# gclean default configuration
@@ -87,11 +88,33 @@ func Parse(data []byte) (Document, error) {
 	return doc, nil
 }
 
-func writeDefault(path string) error {
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+// DefaultDocument returns the same safe configuration created on first run.
+func DefaultDocument() (Document, error) { return Parse([]byte(defaultConfig)) }
+
+// Save validates and atomically persists the CLI-compatible YAML document.
+func Save(document Document) error {
+	if _, err := document.CompileFull(); err != nil {
 		return err
 	}
-	return os.WriteFile(path, []byte(defaultConfig), 0o644)
+	path, err := DefaultPath()
+	if err != nil {
+		return err
+	}
+	data, err := yamlMarshal(document)
+	if err != nil {
+		return fmt.Errorf("marshal config: %w", err)
+	}
+	if err := fileutil.WriteAtomic(path, data, 0o600, ".gclean-config-*"); err != nil {
+		return fmt.Errorf("write config %s: %w", path, err)
+	}
+	return nil
+}
+
+func writeDefault(path string) error {
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		return err
+	}
+	return fileutil.WriteAtomic(path, []byte(defaultConfig), 0o600, ".gclean-config-*")
 }
 
 // Compile converts a Document into a parseable RuleConfig the planner uses.

@@ -13,18 +13,26 @@ import (
 // them. It lives in storage (not cli) so the engine pipeline can write it as
 // a stage without importing os/env. The CLI still owns the *path* (via
 // GCLEAN_UNDO_CACHE); the engine passes that path in.
-const undoCacheVersion = 1
+const undoCacheVersion = 2
+
+// UndoBatch is the account-bound recovery unit created before moving messages
+// to Trash.
+type UndoBatch struct {
+	Account string          `json:"account"`
+	Records []StoredMessage `json:"records"`
+}
 
 type undoCache struct {
 	Version  int             `json:"version"`
 	Checksum string          `json:"checksum"`
+	Account  string          `json:"account,omitempty"`
 	Records  []StoredMessage `json:"records"`
 }
 
-// checksumRecords hashes the canonical JSON of the records so a partial write
-// or external tampering is detected before the records are re-inserted.
-func checksumRecords(recs []StoredMessage) (string, error) {
-	payload, err := json.Marshal(recs)
+// checksumBatch hashes the account and records so tampering with either is
+// detected before Gmail or the local database is mutated.
+func checksumBatch(account string, recs []StoredMessage) (string, error) {
+	payload, err := json.Marshal(UndoBatch{Account: account, Records: recs})
 	if err != nil {
 		return "", err
 	}
@@ -37,7 +45,12 @@ func checksumRecords(recs []StoredMessage) (string, error) {
 // crash cannot leave a partially-written cache at the canonical path. It
 // refuses to overwrite a non-empty existing cache.
 func SaveUndoCache(path string, recs []StoredMessage) error {
-	return writeUndoCache(path, recs, false)
+	return SaveUndoCacheForAccount(path, "", recs)
+}
+
+// SaveUndoCacheForAccount writes a new account-bound recovery batch.
+func SaveUndoCacheForAccount(path, account string, recs []StoredMessage) error {
+	return writeUndoCache(path, account, recs, false)
 }
 
 // ReplaceUndoCache overwrites an existing undo cache. It is used to trim the
@@ -46,7 +59,12 @@ func SaveUndoCache(path string, recs []StoredMessage) error {
 // only ever touches the messages that really need it. The write is still
 // atomic.
 func ReplaceUndoCache(path string, recs []StoredMessage) error {
-	return writeUndoCache(path, recs, true)
+	return ReplaceUndoCacheForAccount(path, "", recs)
+}
+
+// ReplaceUndoCacheForAccount atomically replaces an account-bound batch.
+func ReplaceUndoCacheForAccount(path, account string, recs []StoredMessage) error {
+	return writeUndoCache(path, account, recs, true)
 }
 
 // ReplaceOrRemoveUndoCache rewrites the cache to the given records, or
@@ -55,16 +73,22 @@ func ReplaceUndoCache(path string, recs []StoredMessage) error {
 // non-empty file), so after a reconcile that leaves nothing in Trash the
 // correct end state is "no cache at all", not "a cache with zero records".
 func ReplaceOrRemoveUndoCache(path string, recs []StoredMessage) error {
+	return ReplaceOrRemoveUndoCacheForAccount(path, "", recs)
+}
+
+// ReplaceOrRemoveUndoCacheForAccount replaces a non-empty account-bound
+// batch, or removes the cache when no recoverable records remain.
+func ReplaceOrRemoveUndoCacheForAccount(path, account string, recs []StoredMessage) error {
 	if len(recs) == 0 {
 		if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
 			return err
 		}
 		return nil
 	}
-	return ReplaceUndoCache(path, recs)
+	return ReplaceUndoCacheForAccount(path, account, recs)
 }
 
-func writeUndoCache(path string, recs []StoredMessage, overwrite bool) error {
+func writeUndoCache(path, account string, recs []StoredMessage, overwrite bool) error {
 	if !overwrite {
 		if info, err := os.Stat(path); err == nil {
 			if info.Size() > 0 {
@@ -74,11 +98,11 @@ func writeUndoCache(path string, recs []StoredMessage, overwrite bool) error {
 			return err
 		}
 	}
-	sum, err := checksumRecords(recs)
+	sum, err := checksumBatch(account, recs)
 	if err != nil {
 		return err
 	}
-	c := undoCache{Version: undoCacheVersion, Checksum: sum, Records: recs}
+	c := undoCache{Version: undoCacheVersion, Checksum: sum, Account: account, Records: recs}
 	b, err := json.MarshalIndent(c, "", "  ")
 	if err != nil {
 		return err
@@ -91,28 +115,72 @@ func writeUndoCache(path string, recs []StoredMessage, overwrite bool) error {
 // unsupported version is — a corrupt cache must not silently re-upsert
 // strange rows.
 func LoadUndoCache(path string) ([]StoredMessage, error) {
+	batch, err := LoadUndoBatch(path)
+	return batch.Records, err
+}
+
+// LoadUndoBatch reads and verifies the account-bound undo batch. Version 1
+// files remain readable but have an empty account and are rejected by
+// ValidateUndoAccount before production mutations.
+func LoadUndoBatch(path string) (UndoBatch, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
 		if os.IsNotExist(err) {
-			return nil, nil
+			return UndoBatch{}, nil
 		}
-		return nil, err
+		return UndoBatch{}, err
 	}
 	var c undoCache
 	if err := json.Unmarshal(data, &c); err != nil {
-		return nil, err
+		return UndoBatch{}, err
 	}
 	if c.Checksum != "" {
-		if c.Version != undoCacheVersion {
-			return nil, fmt.Errorf("undo cache version %d unsupported (want %d)", c.Version, undoCacheVersion)
-		}
-		want, err := checksumRecords(c.Records)
-		if err != nil {
-			return nil, err
+		var want string
+		switch c.Version {
+		case 1:
+			payload, err := json.Marshal(c.Records)
+			if err != nil {
+				return UndoBatch{}, err
+			}
+			sum := sha256.Sum256(payload)
+			want = hex.EncodeToString(sum[:])
+		case undoCacheVersion:
+			var err error
+			want, err = checksumBatch(c.Account, c.Records)
+			if err != nil {
+				return UndoBatch{}, err
+			}
+		default:
+			return UndoBatch{}, fmt.Errorf("undo cache version %d unsupported (want %d)", c.Version, undoCacheVersion)
 		}
 		if want != c.Checksum {
-			return nil, errors.New("undo cache checksum mismatch: file may be corrupt or partially written")
+			return UndoBatch{}, errors.New("undo cache checksum mismatch: file may be corrupt or partially written")
 		}
 	}
-	return c.Records, nil
+	return UndoBatch{Account: c.Account, Records: c.Records}, nil
+}
+
+// ValidateUndoAccount prevents a cache from one Gmail account (or an unowned
+// legacy cache) from being consumed while another account is authenticated.
+func ValidateUndoAccount(path, account string) error {
+	batch, err := LoadUndoBatch(path)
+	if err != nil {
+		return err
+	}
+	return ValidateUndoBatchAccount(batch, account)
+}
+
+// ValidateUndoBatchAccount validates an already-loaded batch. Callers that
+// hold the mutation lock can avoid a second read of the cache.
+func ValidateUndoBatchAccount(batch UndoBatch, account string) error {
+	if account == "" || len(batch.Records) == 0 {
+		return nil
+	}
+	if batch.Account == "" {
+		return errors.New("undo cache predates account binding; restore it with the previous gclean version or remove it before continuing")
+	}
+	if batch.Account != account {
+		return fmt.Errorf("undo cache belongs to Gmail account %q, not %q; switch accounts before restoring or purging", batch.Account, account)
+	}
+	return nil
 }

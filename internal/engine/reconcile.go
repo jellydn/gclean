@@ -1,10 +1,14 @@
 package engine
 
 import (
+	"errors"
 	"fmt"
 
 	"gclean/internal/storage"
 )
+
+// ErrNothingToRestore reports that no recoverable gclean batch exists.
+var ErrNothingToRestore = errors.New("nothing to restore")
 
 // MutationClient is the engine's single Gmail mutation adapter. It combines
 // each state transition with the read-back operation the journal uses to
@@ -45,33 +49,71 @@ type Outcome struct {
 
 // Reconciler is the mutation journal for clean, undo, and purge. Apply owns
 // the mutation/reconcile/local-state protocol so callers only describe an
-// intent, provide the Gmail mutation, and render its Outcome.
+// intent and render its Outcome.
 type Reconciler struct {
 	Store     *storage.Store
 	CachePath string
+	Account   string
 	Client    MutationClient
+	// MutationLockHeld is set when a caller already holds the lock across a
+	// preview and its apply stage.
+	MutationLockHeld bool
 }
 
 // Apply runs a Gmail mutation and journals its observed outcome into SQLite
 // and the undo cache. If Gmail applies only part of a mutation, Apply reads
 // server state back, commits exactly that subset locally, and returns both a
 // typed Outcome and an operation-specific partial-failure error.
-func (r *Reconciler) Apply(intent Intent, mutator func() error) (Outcome, error) {
+func (r *Reconciler) Apply(intent Intent) (Outcome, error) {
+	var lock *storage.MutationLock
+	if !r.MutationLockHeld {
+		var err error
+		lock, err = storage.AcquireMutationLock(r.CachePath)
+		if err != nil {
+			return Outcome{}, err
+		}
+		defer func() { _ = lock.Unlock() }()
+	}
+
+	if (intent.Mutation == MutationRestore || intent.Mutation == MutationPurge) && r.CachePath != "" {
+		batch, err := storage.LoadUndoBatch(r.CachePath)
+		if err != nil {
+			return Outcome{}, err
+		}
+		if err := storage.ValidateUndoBatchAccount(batch, r.Account); err != nil {
+			return Outcome{}, err
+		}
+		intent.Records = batch.Records
+	}
+	if intent.Mutation == MutationRestore && len(intent.Records) == 0 {
+		return Outcome{}, ErrNothingToRestore
+	}
+	if r.Store != nil {
+		if err := r.Store.BindAccount(r.Account); err != nil {
+			return Outcome{}, err
+		}
+	}
+
 	switch intent.Mutation {
 	case MutationTrash:
-		return r.applyTrash(intent.Records, mutator)
+		return r.applyTrash(intent.Records)
 	case MutationRestore:
-		return r.applyRestore(intent.Records, mutator)
+		return r.applyRestore(intent.Records)
 	case MutationPurge:
-		return r.applyPurge(intent.Records, mutator)
+		return r.applyPurge(intent.Records)
 	default:
 		return Outcome{}, fmt.Errorf("unknown mutation %q", intent.Mutation)
 	}
 }
 
-func (r *Reconciler) applyTrash(records []storage.StoredMessage, mutator func() error) (Outcome, error) {
+func (r *Reconciler) applyTrash(records []storage.StoredMessage) (Outcome, error) {
 	ids := recordIDs(records)
-	cause := mutator()
+	if r.CachePath != "" {
+		if err := storage.SaveUndoCacheForAccount(r.CachePath, r.Account, records); err != nil {
+			return Outcome{}, fmt.Errorf("save undo cache: %w", err)
+		}
+	}
+	cause := r.Client.TrashMessages(ids)
 	if cause == nil {
 		if err := r.Store.MarkTrashed(ids); err == nil {
 			return outcomeFor(records, ids, ids, nil), nil
@@ -98,14 +140,14 @@ func (r *Reconciler) applyTrash(records []storage.StoredMessage, mutator func() 
 	}
 }
 
-func (r *Reconciler) applyRestore(records []storage.StoredMessage, mutator func() error) (Outcome, error) {
+func (r *Reconciler) applyRestore(records []storage.StoredMessage) (Outcome, error) {
 	ids := recordIDs(records)
 	before, err := r.inTrash(ids)
 	if err != nil {
 		return Outcome{}, fmt.Errorf("restore: reconcile failed: %w", err)
 	}
 
-	cause := mutator()
+	_, cause := r.Client.RestoreFromTrash(ids)
 	still, err := r.inTrash(ids)
 	if err != nil {
 		if cause != nil {
@@ -135,9 +177,9 @@ func (r *Reconciler) applyRestore(records []storage.StoredMessage, mutator func(
 	return outcome, fmt.Errorf("restore partially applied: %d of %d messages restored: %w", len(moved), len(ids), cause)
 }
 
-func (r *Reconciler) applyPurge(records []storage.StoredMessage, mutator func() error) (Outcome, error) {
+func (r *Reconciler) applyPurge(records []storage.StoredMessage) (Outcome, error) {
 	ids := recordIDs(records)
-	cause := mutator()
+	cause := r.Client.EmptyTrash()
 	if cause == nil {
 		outcome := outcomeFor(records, nil, nil, ids)
 		if err := r.replaceCache(nil); err != nil {
@@ -174,7 +216,7 @@ func (r *Reconciler) replaceCache(records []storage.StoredMessage) error {
 	if r.CachePath == "" {
 		return nil
 	}
-	return storage.ReplaceOrRemoveUndoCache(r.CachePath, records)
+	return storage.ReplaceOrRemoveUndoCacheForAccount(r.CachePath, r.Account, records)
 }
 
 func (r *Reconciler) inTrash(ids []string) ([]string, error) {

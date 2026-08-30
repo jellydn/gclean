@@ -54,6 +54,7 @@ func Build(stdout, stderr io.Writer) *cobra.Command {
 	root.AddCommand(
 		newLoginCmd(stdout, stderr),
 		newLogoutCmd(stdout, stderr),
+		newDesktopCmd(stdout, stderr),
 		newScanCmd(stdout, stderr),
 		newStatsCmd(stdout, stderr),
 		newDryRunCmd(stdout, stderr),

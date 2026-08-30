@@ -1,0 +1,130 @@
+name: Build and release desktop
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ !startsWith(github.ref, 'refs/tags/') }}
+
+jobs:
+  test:
+    name: Test
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - name: Set up Go
+        uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
+        with:
+          go-version-file: go.mod
+          cache: true
+          cache-dependency-path: go.sum
+      - name: Download modules
+        run: go mod download
+      - name: Vet
+        run: go vet ./...
+      - name: Build
+        run: go build -trimpath ./...
+      - name: Test with race detector
+        run: go test -race ./...
+      - name: Check email literals
+        run: ./scripts/lint-email-literals.sh
+
+  package:
+    name: Package beta desktop binaries
+    needs: test
+    runs-on: macos-15
+    timeout-minutes: 20
+    env:
+      MACOS_ADHOC_SIGN: "1"
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - name: Set up Go
+        uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
+        with:
+          go-version-file: go.mod
+          cache: true
+          cache-dependency-path: go.sum
+      - name: Set artifact version
+        shell: bash
+        run: |
+          if [[ "$GITHUB_REF" == refs/tags/* ]]; then
+            tag=${GITHUB_REF_NAME}
+            semver='^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-[0-9A-Za-z]+([.-][0-9A-Za-z]+)*)?(\+[0-9A-Za-z]+([.-][0-9A-Za-z]+)*)?$'
+            if [[ ! "$tag" =~ $semver ]]; then
+              echo "Release tags must use SemVer, for example v1.2.3 or v1.2.3-rc.1" >&2
+              exit 1
+            fi
+            version=${tag#v}
+          else
+            version=ci-${GITHUB_SHA::12}
+          fi
+          printf 'VERSION=%s\n' "$version" >> "$GITHUB_ENV"
+      - name: Build portable archives
+        run: ./scripts/package-desktop.sh
+      - name: Verify checksums
+        run: cd dist && shasum -a 256 --check SHA256SUMS
+      - name: Verify ad-hoc macOS signatures
+        shell: bash
+        run: |
+          for archive in dist/gclean-*-darwin-*.tar.gz; do
+            work=$(mktemp -d)
+            tar -xzf "$archive" -C "$work"
+            codesign --verify --strict --verbose=2 "$work/gclean"
+            codesign -dv --verbose=2 "$work/gclean" 2>&1 | grep -F 'Signature=adhoc'
+          done
+      - name: Upload workflow artifact
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: gclean-desktop-${{ env.VERSION }}
+          path: |
+            dist/gclean-*.tar.gz
+            dist/gclean-*.zip
+            dist/SHA256SUMS
+          if-no-files-found: error
+          retention-days: 14
+          compression-level: 0
+
+  release:
+    name: Publish GitHub Release
+    if: startsWith(github.ref, 'refs/tags/')
+    needs: package
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      - name: Download packaged binaries
+        uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0 # v5
+        with:
+          pattern: gclean-desktop-*
+          path: dist
+          merge-multiple: true
+      - name: Publish release and assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        shell: bash
+        run: |
+          if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
+            gh release upload "$GITHUB_REF_NAME" dist/* --clobber
+          else
+            gh release create "$GITHUB_REF_NAME" dist/* \
+              --verify-tag \
+              --generate-notes \
+              --prerelease \
+              --title "gclean $GITHUB_REF_NAME"
+          fi

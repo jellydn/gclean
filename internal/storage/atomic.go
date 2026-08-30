@@ -2,7 +2,8 @@ package storage
 
 import (
 	"os"
-	"path/filepath"
+
+	"gclean/internal/fileutil"
 )
 
 // writeFileAtomic writes data to path atomically: it writes and syncs a
@@ -16,44 +17,5 @@ import (
 // and writeAtomic each re-implemented the same write+sync+rename+dirsync
 // dance, so a durability fix would have had to land twice.
 func writeFileAtomic(path string, data []byte, mode os.FileMode, tmpPrefix string) error {
-	dir := filepath.Dir(path)
-	if err := os.MkdirAll(dir, 0o755); err != nil {
-		return err
-	}
-	tmp, err := os.CreateTemp(dir, tmpPrefix)
-	if err != nil {
-		return err
-	}
-	tmpPath := tmp.Name()
-	defer func() {
-		_ = tmp.Close()
-		_ = os.Remove(tmpPath)
-	}()
-	if err := tmp.Chmod(mode); err != nil {
-		return err
-	}
-	if _, err := tmp.Write(data); err != nil {
-		return err
-	}
-	if err := tmp.Sync(); err != nil {
-		return err
-	}
-	if err := tmp.Close(); err != nil {
-		return err
-	}
-	if err := os.Rename(tmpPath, path); err != nil {
-		return err
-	}
-	return syncDirectory(dir)
-}
-
-// syncDirectory fsyncs a directory so a completed rename is durable across a
-// crash.
-func syncDirectory(path string) error {
-	dir, err := os.Open(path)
-	if err != nil {
-		return err
-	}
-	defer func() { _ = dir.Close() }()
-	return dir.Sync()
+	return fileutil.WriteAtomic(path, data, mode, tmpPrefix)
 }

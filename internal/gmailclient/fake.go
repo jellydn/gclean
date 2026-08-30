@@ -40,6 +40,7 @@ type FakeClient struct {
 	msgs    []*models.Message
 	trashed map[string]bool
 	deleted map[string]bool
+	account string
 
 	FailTrash        bool
 	FailTrashAfter   int
@@ -85,14 +86,27 @@ func NewFakeClient(path string) (*FakeClient, error) {
 			msgs[i].Headers = map[string]string{}
 		}
 	}
-	return &FakeClient{msgs: msgs, trashed: map[string]bool{}, deleted: map[string]bool{}}, nil
+	return &FakeClient{msgs: msgs, trashed: map[string]bool{}, deleted: map[string]bool{}, account: "fixture"}, nil
 }
 
 // NewFakeClientFromMessages builds an in-memory fake without disk I/O.
 func NewFakeClientFromMessages(msgs []*models.Message) *FakeClient {
 	cp := make([]*models.Message, len(msgs))
 	copy(cp, msgs)
-	return &FakeClient{msgs: cp, trashed: map[string]bool{}, deleted: map[string]bool{}}
+	return &FakeClient{msgs: cp, trashed: map[string]bool{}, deleted: map[string]bool{}, account: "fixture"}
+}
+
+func (f *FakeClient) AccountEmail() (string, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.account, nil
+}
+
+// SetAccountEmail changes the fake account identity for account-mismatch tests.
+func (f *FakeClient) SetAccountEmail(account string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.account = account
 }
 
 func (f *FakeClient) ListMessages(query string, max int) ([]*models.Message, error) {

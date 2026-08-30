@@ -315,11 +315,10 @@ func TestRealClient_InTrash_404IsNotInTrash(t *testing.T) {
 	}
 }
 
-func TestRealClient_EmptyTrash_FallsBackToIndividualDeleteOn403(t *testing.T) {
+func TestRealClient_EmptyTrash_ExplainsFullScopeRequirement(t *testing.T) {
 	stubRetryDelay(t, func(int, error) time.Duration { return 0 })
 	var (
 		batchCalls atomic.Int32
-		deleted    []string
 	)
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch {
@@ -331,24 +330,18 @@ func TestRealClient_EmptyTrash_FallsBackToIndividualDeleteOn403(t *testing.T) {
 			// Google's backend rejects batchDelete without the full-access
 			// scope even when the token holds gmail.modify.
 			http.Error(w, "Request had insufficient authentication scopes.", http.StatusForbidden)
-		case r.Method == http.MethodDelete && strings.HasPrefix(r.URL.Path, "/gmail/v1/users/me/messages/"):
-			deleted = append(deleted, path.Base(r.URL.Path))
-			_, _ = fmt.Fprint(w, `{}`)
 		default:
 			http.Error(w, "unexpected request: "+r.Method+" "+r.URL.Path, http.StatusNotFound)
 		}
 	}))
 	defer server.Close()
 
-	if err := newHTTPTestClient(t, server).EmptyTrash(); err != nil {
-		t.Fatalf("EmptyTrash: %v", err)
+	err := newHTTPTestClient(t, server).EmptyTrash()
+	if err == nil || !strings.Contains(err.Error(), "login --allow-permanent-delete") {
+		t.Fatalf("EmptyTrash error = %v, want actionable authorization error", err)
 	}
 	if batchCalls.Load() != 1 {
 		t.Fatalf("batchDelete calls = %d, want 1", batchCalls.Load())
-	}
-	want := []string{"t1", "t2", "t3"}
-	if strings.Join(deleted, ",") != strings.Join(want, ",") {
-		t.Fatalf("individually deleted = %v, want %v", deleted, want)
 	}
 }
 

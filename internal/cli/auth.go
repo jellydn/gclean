@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"path/filepath"
 	"time"
 
 	"github.com/spf13/cobra"
@@ -15,6 +14,7 @@ import (
 )
 
 func newLoginCmd(out, errOut io.Writer) *cobra.Command {
+	var allowPurge bool
 	cmd := &cobra.Command{
 		Use:   "login",
 		Short: "Authenticate with Gmail via OAuth2 and store token locally",
@@ -34,17 +34,21 @@ func newLoginCmd(out, errOut io.Writer) *cobra.Command {
 				return errors.New("credentials.json missing")
 			}
 
-			server, err := gmailclient.NewAuthCodeServer()
+			state, err := gmailclient.NewOAuthState()
+			if err != nil {
+				return fmt.Errorf("create OAuth state: %w", err)
+			}
+			server, err := gmailclient.NewAuthCodeServer(state)
 			if err != nil {
 				return fmt.Errorf("start callback server: %w", err)
 			}
 			defer func() { _ = server.Close() }()
 
-			cfg, err := gmailclient.LoadConfigWithRedirect(p, server.RedirectURL())
+			cfg, err := gmailclient.LoadConfigWithRedirectAndPurge(p, server.RedirectURL(), allowPurge)
 			if err != nil {
 				return fmt.Errorf("load credentials: %w", err)
 			}
-			authURL := cfg.AuthCodeURL("gclean-state")
+			authURL := gmailclient.AuthorizationURL(cfg, state)
 			_, _ = fmt.Fprintln(out, "Opening browser for Gmail authentication...")
 			if err := gmailclient.OpenBrowser(authURL); err != nil {
 				_, _ = fmt.Fprintf(out, "Could not open browser automatically. Open this URL manually:\n%s\n", authURL)
@@ -60,15 +64,15 @@ func newLoginCmd(out, errOut io.Writer) *cobra.Command {
 				return fmt.Errorf("exchange code: %w", err)
 			}
 
-			if err := gmailclient.SaveToken(tok); err != nil {
+			if err := gmailclient.SaveTokenWithAuthorization(tok, allowPurge); err != nil {
 				return fmt.Errorf("save token: %w", err)
 			}
 
-			tokPath := filepath.Join(filepath.Dir(credentialsPath()), "token.json")
-			_, _ = fmt.Fprintln(out, "Authentication successful. Token saved to "+tokPath)
+			_, _ = fmt.Fprintln(out, "Authentication successful. Token saved to "+gmailclient.TokenPath())
 			return nil
 		},
 	}
+	cmd.Flags().BoolVar(&allowPurge, "allow-permanent-delete", false, "Request full Gmail access required to empty Trash (not needed for scan, Trash, or restore)")
 	return cmd
 }
 
@@ -77,8 +81,7 @@ func newLogoutCmd(out, errOut io.Writer) *cobra.Command {
 		Use:   "logout",
 		Short: "Remove the locally stored OAuth token",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			tok := filepath.Join(filepath.Dir(credentialsPath()), "token.json")
-			if err := os.Remove(tok); err != nil && !os.IsNotExist(err) {
+			if err := gmailclient.RemoveToken(); err != nil {
 				return err
 			}
 			_, _ = fmt.Fprintln(out, "Logged out (token.json removed if present).")

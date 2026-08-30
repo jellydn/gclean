@@ -40,7 +40,7 @@ gclean clean --yes --fixtures testdata/fixtures/messages.json
 gclean undo  --fixtures testdata/fixtures/messages.json
 ```
 
-`RealClient.ListMessages` in `internal/gmailclient/real.go` is implemented for paginated metadata reads and classification headers. `TrashMessages` and `RestoreFromTrash` use retrying individual Gmail calls; `EmptyTrash` paginates the Trash label and batch-deletes up to 1,000 IDs per request. Local reconciliation of partial mutations is implemented via the `InTrash` seam (`internal/engine/pipeline.go`, `internal/cli/pipeline.go`); live end-to-end real-Gmail cleanup validation remains the next safety layer. Swap implementations at the `gmailclient.Client` interface seam.
+`RealClient.ListMessages` in `internal/gmailclient/real.go` is implemented for paginated metadata reads and classification headers. `TrashMessages` and `RestoreFromTrash` use retrying individual Gmail calls; `EmptyTrash` paginates the Trash label and batch-deletes up to 1,000 IDs per request. Local reconciliation of partial mutations is implemented by the Mutation Journal via the `InTrash` seam (`internal/engine/reconcile.go`); live end-to-end real-Gmail cleanup validation remains the next safety layer. Swap implementations at the `gmailclient.Client` interface seam.
 
 ## Key env vars
 
@@ -76,7 +76,7 @@ internal/tui/              — experimental Bubble Tea UI
 testdata/fixtures/         — message fixture corpus
 ```
 
-The scan→plan→trash flow is the `engine.Pipeline` seam (`internal/engine/pipeline.go`): composable `Stage`s (Scan → Plan → Apply). CLI handlers build a `Pipeline` and run the stage slice they need. `Plan` does no Gmail I/O; `Apply` is the only Gmail-mutating stage.
+The scan→plan→trash flow is the `engine.Pipeline` seam (`internal/engine/pipeline.go`): composable `Stage`s (Scan → Plan → Apply). CLI handlers build a `Pipeline` and run the stage slice they need. `Plan` does no Gmail I/O; `Apply` delegates mutation and reconciliation to the `engine.Reconciler` Mutation Journal.
 
 Fixtures (`testdata/fixtures/messages.json`) are real Gmail-shaped JSON, used by both `--fixtures` and `NewFakeClientFromMessages()` in tests.
 
