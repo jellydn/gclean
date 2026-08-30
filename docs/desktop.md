@@ -146,6 +146,40 @@ Archives and `SHA256SUMS` are written to `dist/`. Set `VERSION` to control the
 archive names. The packaging script creates unsigned portable binaries; it
 does not publish anything.
 
+### Automated builds and releases
+
+GitHub Actions runs vet, build, race-enabled tests, the email-literal safety
+lint, and portable packaging for pull requests and pushes to `main`. The
+portable archives and checksum manifest are retained as a workflow artifact
+for 14 days. CI archive names use the immutable commit-based version
+`ci-<12-character SHA>`.
+
+Pushing a SemVer tag such as `v1.2.3` or `v1.2.3-rc.1` runs the same checks and
+publishes a GitHub Release containing:
+
+- `gclean-<version>-darwin-{amd64,arm64}.tar.gz`
+- `gclean-<version>-linux-{amd64,arm64}.tar.gz`
+- `gclean-<version>-windows-amd64.zip`
+- `SHA256SUMS`
+
+The workflow verifies the checksums before publishing and uses only the
+short-lived repository `GITHUB_TOKEN`; no release secrets are required. A
+rerun for an existing tag replaces that tag's assets with the freshly verified
+outputs. Actions are pinned to immutable revisions, permissions default to
+read-only, and only the tag-only release job receives `contents: write`.
+
+Release binaries are currently unsigned. No signing or notarization
+credentials are configured in the repository, so signing remains a guarded
+future release step rather than exposing optional secrets to normal CI. See
+the platform notes below before distributing binaries broadly.
+
+There is intentionally no container-image release. The repository has no
+Dockerfile or registry convention, and `gclean desktop` is a user-facing,
+loopback-only application that must open the user's browser and local OAuth
+flow. Portable native binaries are the appropriate distribution format; a
+container would weaken that setup experience without replacing platform
+signing.
+
 ### Platform notes
 
 - **macOS:** first-party distribution should codesign and notarize the binary.
