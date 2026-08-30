@@ -372,6 +372,14 @@ func (a *App) setScanStatus(status scanStatus) {
 	a.scanMu.Unlock()
 }
 
+func (a *App) updateScanProgress(fetched int) {
+	a.scanMu.Lock()
+	if a.scanState.State == "scanning" && fetched > a.scanState.Fetched {
+		a.scanState.Fetched = fetched
+	}
+	a.scanMu.Unlock()
+}
+
 func (a *App) buildSettings() (settingsResponse, error) {
 	document, err := a.cfg.LoadConfig()
 	if err != nil {
@@ -743,7 +751,7 @@ func (a *App) scan(w http.ResponseWriter, r *http.Request) error {
 	}
 	if reporter, ok := client.(interface{ SetScanProgress(func(int)) }); ok {
 		reporter.SetScanProgress(func(fetched int) {
-			a.setScanStatus(scanStatus{State: "scanning", Fetched: fetched})
+			a.updateScanProgress(fetched)
 		})
 		defer reporter.SetScanProgress(nil)
 	}
