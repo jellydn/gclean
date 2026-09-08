@@ -20,13 +20,15 @@ import (
 
 	"golang.org/x/oauth2"
 	"golang.org/x/oauth2/google"
+	"google.golang.org/api/drive/v3"
 	"google.golang.org/api/gmail/v1"
 )
 
-// gmail.modify includes metadata reads plus Trash and restore. It is the
-// least-privilege default. Permanent deletion requires mail.google.com and is
-// requested only when a user explicitly opts into purge authorization.
-var oauthScopes = []string{gmail.GmailModifyScope}
+// gmail.modify includes metadata reads plus Trash and restore. Drive metadata
+// read access exposes the account-wide Google storage quota, not file content.
+// Permanent deletion requires mail.google.com and is requested only when a
+// user explicitly opts into purge authorization.
+var oauthScopes = []string{gmail.GmailModifyScope, drive.DriveMetadataReadonlyScope}
 
 const oauthListenHost = "localhost"
 
@@ -70,9 +72,9 @@ func LoadConfigWithRedirectAndPurge(credentialsPath, redirectURL string, allowPu
 	if err != nil {
 		return nil, fmt.Errorf("read credentials: %w", err)
 	}
-	scopes := oauthScopes
+	scopes := append([]string(nil), oauthScopes...)
 	if allowPurge {
-		scopes = []string{gmail.GmailModifyScope, gmail.MailGoogleComScope}
+		scopes = append(scopes, gmail.MailGoogleComScope)
 	}
 	cfg, err := google.ConfigFromJSON(b, scopes...)
 	if err != nil {

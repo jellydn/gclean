@@ -113,6 +113,13 @@ type StatsReport struct {
 	ByYear              map[int]int64
 }
 
+// StorageQuota is the Google Account storage total reported by the Drive API.
+// Usage includes Gmail, Drive, and Photos, not only metadata indexed by gclean.
+type StorageQuota struct {
+	Used  int64 `json:"used"`
+	Limit int64 `json:"limit"`
+}
+
 // SenderVolume is one row of the sender ranking in StatsReport.
 type SenderVolume struct {
 	Email string

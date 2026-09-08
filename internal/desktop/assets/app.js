@@ -131,9 +131,13 @@ function render() {
 			? "Gmail connected"
 			: "Setup required";
 	$("setup").classList.toggle("hidden", connected);
-	$("total-storage").textContent = bytes(state.stats.EstimatedStorage);
-	$("total-messages").textContent =
-		`${state.stats.TotalMessages.toLocaleString()} messages indexed`;
+	if (state.storageQuota) {
+		$("total-storage").textContent = `${bytes(state.storageQuota.used)} of ${bytes(state.storageQuota.limit)}`;
+		$("total-messages").textContent = "Gmail, Drive & Photos";
+	} else {
+		$("total-storage").textContent = bytes(state.stats.EstimatedStorage);
+		$("total-messages").textContent = state.quotaWarning || `${state.stats.TotalMessages.toLocaleString()} Gmail messages indexed`;
+	}
 	$("reclaim").textContent = bytes(state.preview.RecoverBytes);
 	$("delete-count").textContent =
 		`${state.preview.DeleteCount.toLocaleString()} messages in preview`;
@@ -141,13 +145,18 @@ function render() {
 	$("selected-storage").textContent = bytes(state.preview.RecoverBytes);
 	$("selected-count").textContent =
 		`${state.preview.DeleteCount.toLocaleString()} messages`;
-	$("open-trash").disabled = !connected || !state.preview.DeleteCount;
+	$("open-trash").disabled =
+		!connected || !state.preview.DeleteCount || state.recoveryPending;
+	$("open-trash").title = state.recoveryPending
+		? "Restore the previous cleanup batch before starting another cleanup"
+		: "";
 	$("undo-copy").textContent = state.recoveryWarning
 		? `Recovery is paused: ${state.recoveryWarning}`
 		: state.undoCount
-			? `${state.undoCount.toLocaleString()} messages from the last cleanup can be restored.`
+			? `${state.undoCount.toLocaleString()} messages from the last cleanup can be restored. Restore this batch before starting another cleanup.`
 			: "No gclean batch is currently waiting in Trash.";
 	$("restore").disabled = !connected || !state.undoCount;
+	$("open-legacy-recovery").classList.toggle("hidden", !state.legacyRecovery);
 	$("open-purge").disabled = !connected || !state.purgeAllowed;
 	$("open-purge").title = state.purgeAllowed
 		? "Permanently empty all Gmail Trash"
@@ -237,8 +246,8 @@ function startScanProgress() {
 			const progress = await api("/api/scan/status");
 			if (progress.state === "scanning") {
 				busy(
-					`Scanning Gmail metadata… ${progress.fetched.toLocaleString()} fetched`,
-					"Showing verified Gmail metadata progress. Message bodies are never downloaded.",
+					`${progress.phase || "Scanning Gmail metadata"}… ${progress.fetched.toLocaleString()} processed`,
+					"Message bodies are never downloaded. Cleanup preview starts after local metadata is ready.",
 				);
 			}
 		} catch (_) {
@@ -255,6 +264,10 @@ $("scan").addEventListener("click", async () => {
 	try {
 		const result = await api("/api/scan", {});
 		toast(result.message, true);
+		busy(
+			"Preparing cleanup preview…",
+			"Applying protection settings and cleanup rules to local metadata.",
+		);
 		await load();
 	} catch (e) {
 		toast(e.message);
@@ -290,44 +303,67 @@ async function pollAuth() {
 }
 $("open-trash").addEventListener("click", () => openDialog("trash"));
 $("open-purge").addEventListener("click", () => openDialog("purge"));
+$("open-legacy-recovery").addEventListener("click", () => openDialog("legacyRecovery"));
+function requiredConfirmation() {
+	if (action === "purge") return "EMPTY TRASH PERMANENTLY";
+	if (action === "legacyRecovery") return "REMOVE LEGACY RECOVERY RECORD";
+	return "MOVE TO TRASH";
+}
+function updateConfirmationButton() {
+	const valid = $("confirmation").value === requiredConfirmation();
+	$("confirm-action").disabled = !valid;
+	$("confirmation-status").textContent = valid
+		? "Confirmation accepted."
+		: "Enter the exact confirmation text to continue.";
+}
 function openDialog(kind) {
 	action = kind;
 	const purge = kind === "purge";
+	const legacyRecovery = kind === "legacyRecovery";
 	$("dialog-eyebrow").textContent = purge
 		? "IRREVERSIBLE ACTION"
-		: "CONFIRM CLEANUP";
+		: legacyRecovery ? "LOCAL RECOVERY RECORD" : "CONFIRM CLEANUP";
 	$("dialog-title").textContent = purge
 		? "Permanently empty all Gmail Trash?"
-		: "Move selected mail to Trash?";
+		: legacyRecovery ? "Remove the legacy recovery record?" : "Move selected mail to Trash?";
 	$("dialog-copy").textContent = purge
 		? "This deletes every message currently in Gmail Trash, including items not moved there by gclean. It cannot be undone."
+		: legacyRecovery ? "This removes only the old local undo record. Gmail messages will not change, but that old batch can no longer be restored by gclean."
 		: "The selected planner-approved messages will move to Gmail Trash. Nothing is permanently deleted, and the last batch can be restored from gclean.";
 	$("dialog-size").textContent = purge
 		? "Permanent"
 		: bytes(state.preview.RecoverBytes);
 	$("dialog-count").textContent = purge
 		? "All messages in Trash"
-		: `${state.preview.DeleteCount.toLocaleString()} selected messages`;
-	$("confirmation-label").querySelector("b").textContent = purge
-		? "EMPTY TRASH PERMANENTLY"
-		: "MOVE TO TRASH";
+		: legacyRecovery ? "Local-only action" : `${state.preview.DeleteCount.toLocaleString()} selected messages`;
+	$("confirmation-label").querySelector("b").textContent = requiredConfirmation();
 	$("confirmation").value = "";
 	$("confirm-action").textContent = purge
 		? "Empty Trash permanently"
-		: "Move to Trash";
-	$("confirm-action").className = purge ? "danger" : "danger-soft";
+		: legacyRecovery ? "Remove recovery record" : "Move to Trash";
+	$("confirm-action").className = purge || legacyRecovery ? "danger" : "danger-soft";
+	updateConfirmationButton();
 	$("confirm-dialog").showModal();
 	$("confirmation").focus();
 }
+$("confirmation").addEventListener("input", updateConfirmationButton);
+document
+	.querySelector("#confirm-dialog form")
+	.addEventListener("submit", (event) => event.preventDefault());
+$("close-dialog").addEventListener("click", () => $("confirm-dialog").close());
+$("cancel-dialog").addEventListener("click", () => $("confirm-dialog").close());
 $("confirm-action").addEventListener("click", async (e) => {
 	e.preventDefault();
 	const confirmation = $("confirmation").value;
-	const path = action === "purge" ? "/api/purge" : "/api/trash";
+	if (confirmation !== requiredConfirmation()) return;
+	const path = action === "purge" ? "/api/purge" : action === "legacyRecovery" ? "/api/recovery/legacy/remove" : "/api/trash";
 	$("confirm-dialog").close();
 	busy(
-		action === "purge" ? "Emptying Gmail Trash…" : "Moving messages to Trash…",
+		action === "purge" ? "Emptying Gmail Trash…" : action === "legacyRecovery" ? "Removing legacy recovery record…" : "Moving messages to Trash…",
 		action === "purge"
 			? "This permanent operation may take several minutes."
+			: action === "legacyRecovery"
+				? "Gmail messages will not change."
 			: "An undo record is being saved first.",
 	);
 	try {

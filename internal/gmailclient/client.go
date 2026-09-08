@@ -16,6 +16,10 @@ type Client interface {
 	// bind local metadata and undo state.
 	AccountEmail() (string, error)
 
+	// StorageQuota returns the account-wide Google storage usage and limit.
+	// It includes Gmail, Drive, and Photos rather than only gclean's scan.
+	StorageQuota() (models.StorageQuota, error)
+
 	// ListMessages returns messages matching `query` (same syntax as the
 	// Gmail web search bar) up to `max`. max==0 means "all".
 	ListMessages(query string, max int) ([]*models.Message, error)

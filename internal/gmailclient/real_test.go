@@ -9,6 +9,7 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"path"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -17,6 +18,7 @@ import (
 	"time"
 
 	"gclean/internal/defang"
+	"google.golang.org/api/drive/v3"
 	"google.golang.org/api/gmail/v1"
 	"google.golang.org/api/googleapi"
 	"google.golang.org/api/option"
@@ -105,11 +107,13 @@ func TestRealClient_ListMessagesReportsFetchedMetadata(t *testing.T) {
 	}
 }
 
-func TestRealClient_TrashMessages_RetriesTransientErrors(t *testing.T) {
+func TestRealClient_TrashMessages_BatchesAndRetriesTransientErrors(t *testing.T) {
 	stubRetryDelay(t, func(int, error) time.Duration { return 0 })
 	var attempts atomic.Int32
+	var batches [][]string
+	var batchesMu sync.Mutex
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodPost || r.URL.Path != "/gmail/v1/users/me/messages/m1/trash" {
+		if r.Method != http.MethodPost || r.URL.Path != "/gmail/v1/users/me/messages/batchModify" {
 			http.Error(w, "unexpected request", http.StatusNotFound)
 			return
 		}
@@ -117,17 +121,62 @@ func TestRealClient_TrashMessages_RetriesTransientErrors(t *testing.T) {
 			http.Error(w, "try again", http.StatusTooManyRequests)
 			return
 		}
+		var request gmail.BatchModifyMessagesRequest
+		if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		if !slices.Equal(request.AddLabelIds, []string{"TRASH"}) {
+			http.Error(w, "missing trash label", http.StatusBadRequest)
+			return
+		}
+		batchesMu.Lock()
+		batches = append(batches, request.Ids)
+		batchesMu.Unlock()
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = fmt.Fprint(w, `{}`)
 	}))
 	defer server.Close()
 
 	client := newHTTPTestClient(t, server)
-	if err := client.TrashMessages([]string{"m1"}); err != nil {
+	ids := make([]string, mutationBatchSize+1)
+	for i := range ids {
+		ids[i] = fmt.Sprintf("m%d", i)
+	}
+	if err := client.TrashMessages(ids); err != nil {
 		t.Fatalf("TrashMessages: %v", err)
 	}
-	if got := attempts.Load(); got != 2 {
-		t.Fatalf("request attempts = %d, want 2", got)
+	if got := attempts.Load(); got != 3 {
+		t.Fatalf("request attempts = %d, want 3", got)
+	}
+	batchesMu.Lock()
+	defer batchesMu.Unlock()
+	if len(batches) != 2 || len(batches[0]) != mutationBatchSize || len(batches[1]) != 1 {
+		t.Fatalf("batch sizes = %d, %d; want %d, 1", len(batches[0]), len(batches[1]), mutationBatchSize)
+	}
+}
+
+func TestRealClient_StorageQuota(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet || r.URL.Path != "/drive/v3/about" {
+			http.Error(w, "unexpected request", http.StatusNotFound)
+			return
+		}
+		if r.URL.Query().Get("fields") != "storageQuota(limit,usage)" {
+			http.Error(w, "storage quota fields required", http.StatusBadRequest)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = fmt.Fprint(w, `{"storageQuota":{"usage":"14300000000","limit":"15000000000"}}`)
+	}))
+	defer server.Close()
+
+	quota, err := newHTTPTestClient(t, server).StorageQuota()
+	if err != nil {
+		t.Fatalf("StorageQuota: %v", err)
+	}
+	if quota.Used != 14300000000 || quota.Limit != 15000000000 {
+		t.Fatalf("StorageQuota = %+v", quota)
 	}
 }
 
@@ -449,7 +498,14 @@ func newHTTPTestClient(t *testing.T, server *httptest.Server) *RealClient {
 	if err != nil {
 		t.Fatalf("new test Gmail service: %v", err)
 	}
-	return &RealClient{service: service}
+	driveService, err := drive.NewService(context.Background(),
+		option.WithHTTPClient(httpClient),
+		option.WithoutAuthentication(),
+	)
+	if err != nil {
+		t.Fatalf("new test Drive service: %v", err)
+	}
+	return &RealClient{service: service, driveService: driveService}
 }
 
 type rewriteHostTransport struct {

@@ -60,6 +60,12 @@ func TestDesktopWorkflowRequiresPreviewAndSupportsRestore(t *testing.T) {
 
 	doAPI(t, app, server.URL, http.MethodPost, "/api/selection", actionRequest{Senders: []string{state.Senders[0].Email}}, &state, http.StatusOK)
 	var apiError map[string]string
+	doAPI(t, app, server.URL, http.MethodPost, "/api/trash", actionRequest{Confirmation: "MOVE", PreviewID: state.PreviewID}, &apiError, http.StatusBadRequest)
+	if !strings.Contains(apiError["error"], "type MOVE TO TRASH") || len(fake.TrashedIDs()) != 0 {
+		t.Fatalf("incorrect confirmation changed Gmail: error=%q trashed=%v", apiError["error"], fake.TrashedIDs())
+	}
+
+	apiError = nil
 	doAPI(t, app, server.URL, http.MethodPost, "/api/trash", actionRequest{Confirmation: trashConfirmation, PreviewID: "stale"}, &apiError, http.StatusConflict)
 
 	var trashed actionResponse
@@ -110,6 +116,19 @@ func TestScanStatusDefaultsToIdle(t *testing.T) {
 	}
 }
 
+func TestDesktopStateIncludesGoogleStorageQuota(t *testing.T) {
+	app, fake := newTestApp(t, false)
+	fake.Quota = models.StorageQuota{Used: 14300000000, Limit: 15000000000}
+	server := httptest.NewServer(app.Handler())
+	defer server.Close()
+
+	var state stateResponse
+	doAPI(t, app, server.URL, http.MethodGet, "/api/state", nil, &state, http.StatusOK)
+	if state.StorageQuota == nil || state.StorageQuota.Used != fake.Quota.Used || state.StorageQuota.Limit != fake.Quota.Limit {
+		t.Fatalf("storage quota = %+v, want %+v", state.StorageQuota, fake.Quota)
+	}
+}
+
 func TestDesktopRefusesCrossAccountRestoreWithoutLosingUndo(t *testing.T) {
 	app, fake := newTestApp(t, false)
 	server := httptest.NewServer(app.Handler())
@@ -139,6 +158,59 @@ func TestDesktopRefusesCrossAccountRestoreWithoutLosingUndo(t *testing.T) {
 	}
 	if batch.Account != "fixture" || len(batch.Records) != trashed.Count || len(fake.TrashedIDs()) != trashed.Count {
 		t.Fatalf("undo was changed after mismatch: batch=%+v trash=%v", batch, fake.TrashedIDs())
+	}
+}
+
+func TestDesktopRefusesNewTrashWhileRecoveryIsPending(t *testing.T) {
+	app, fake := newTestApp(t, false)
+	server := httptest.NewServer(app.Handler())
+	defer server.Close()
+
+	var scan actionResponse
+	doAPI(t, app, server.URL, http.MethodPost, "/api/scan", map[string]any{}, &scan, http.StatusOK)
+	var state stateResponse
+	doAPI(t, app, server.URL, http.MethodGet, "/api/state", nil, &state, http.StatusOK)
+	var trashed actionResponse
+	doAPI(t, app, server.URL, http.MethodPost, "/api/trash", actionRequest{Confirmation: trashConfirmation, PreviewID: state.PreviewID}, &trashed, http.StatusOK)
+
+	doAPI(t, app, server.URL, http.MethodGet, "/api/state", nil, &state, http.StatusOK)
+	if !state.RecoveryPending || state.UndoCount != trashed.Count {
+		t.Fatalf("state = %+v, want a pending recovery batch", state)
+	}
+
+	var apiError map[string]string
+	doAPI(t, app, server.URL, http.MethodPost, "/api/trash", actionRequest{Confirmation: trashConfirmation, PreviewID: state.PreviewID}, &apiError, http.StatusConflict)
+	if !strings.Contains(apiError["error"], "restore the previous cleanup batch") {
+		t.Fatalf("trash conflict = %q", apiError["error"])
+	}
+	if got := fake.TrashedIDs(); len(got) != trashed.Count {
+		t.Fatalf("new trash request changed Gmail: %v", got)
+	}
+}
+
+func TestDesktopRemovesLegacyRecoveryOnlyAfterConfirmation(t *testing.T) {
+	app, fake := newTestApp(t, false)
+	server := httptest.NewServer(app.Handler())
+	defer server.Close()
+	if err := storage.SaveUndoCache(app.cfg.CachePath, []storage.StoredMessage{{ID: "legacy"}}); err != nil {
+		t.Fatal(err)
+	}
+
+	var state stateResponse
+	doAPI(t, app, server.URL, http.MethodGet, "/api/state", nil, &state, http.StatusOK)
+	if !state.LegacyRecovery || !state.RecoveryPending {
+		t.Fatalf("state = %+v, want a blocked legacy recovery record", state)
+	}
+	var apiError map[string]string
+	doAPI(t, app, server.URL, http.MethodPost, "/api/recovery/legacy/remove", actionRequest{Confirmation: "REMOVE"}, &apiError, http.StatusBadRequest)
+	if len(fake.TrashedIDs()) != 0 {
+		t.Fatalf("incorrect legacy removal changed Gmail: %v", fake.TrashedIDs())
+	}
+	var removed actionResponse
+	doAPI(t, app, server.URL, http.MethodPost, "/api/recovery/legacy/remove", actionRequest{Confirmation: removeLegacyRecoveryConfirmation}, &removed, http.StatusOK)
+	batch, err := storage.LoadUndoBatch(app.cfg.CachePath)
+	if err != nil || len(batch.Records) != 0 {
+		t.Fatalf("legacy recovery record remains: batch=%+v err=%v", batch, err)
 	}
 }
 

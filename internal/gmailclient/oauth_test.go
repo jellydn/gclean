@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"golang.org/x/oauth2"
+	"google.golang.org/api/drive/v3"
 	"google.golang.org/api/gmail/v1"
 )
 
@@ -24,15 +25,15 @@ func TestOAuthScopes_DefaultIsModifyAndPurgeIsOptIn(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(defaultConfig.Scopes) != 1 || defaultConfig.Scopes[0] != gmail.GmailModifyScope {
-		t.Fatalf("default scopes = %v, want only gmail.modify", defaultConfig.Scopes)
+	if len(defaultConfig.Scopes) != 2 || defaultConfig.Scopes[0] != gmail.GmailModifyScope || defaultConfig.Scopes[1] != drive.DriveMetadataReadonlyScope {
+		t.Fatalf("default scopes = %v, want gmail.modify + drive.metadata.readonly", defaultConfig.Scopes)
 	}
 	purgeConfig, err := LoadConfigWithRedirectAndPurge(path, "http://localhost/callback", true)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(purgeConfig.Scopes) != 2 || purgeConfig.Scopes[1] != gmail.MailGoogleComScope {
-		t.Fatalf("purge scopes = %v, want modify + full access", purgeConfig.Scopes)
+	if len(purgeConfig.Scopes) != 3 || purgeConfig.Scopes[2] != gmail.MailGoogleComScope {
+		t.Fatalf("purge scopes = %v, want modify + drive metadata + full access", purgeConfig.Scopes)
 	}
 	authURL, err := url.Parse(AuthorizationURL(defaultConfig, "state-value"))
 	if err != nil {

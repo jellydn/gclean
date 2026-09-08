@@ -17,6 +17,7 @@ import (
 
 	"gclean/internal/models"
 	"golang.org/x/sync/errgroup"
+	"google.golang.org/api/drive/v3"
 	"google.golang.org/api/gmail/v1"
 	"google.golang.org/api/googleapi"
 	"google.golang.org/api/option"
@@ -30,6 +31,7 @@ var ErrCredentialsMissing = errors.New("gmail credentials.json not found; drop i
 type RealClient struct {
 	credentialsPath string
 	service         *gmail.Service
+	driveService    *drive.Service
 	progressMu      sync.RWMutex
 	scanProgress    func(int)
 }
@@ -62,6 +64,18 @@ func (r *RealClient) AccountEmail() (string, error) {
 	return strings.ToLower(profile.EmailAddress), nil
 }
 
+// StorageQuota reports Google Account storage across Gmail, Drive, and Photos.
+func (r *RealClient) StorageQuota() (models.StorageQuota, error) {
+	about, err := r.driveService.About.Get().Fields("storageQuota(limit,usage)").Do()
+	if err != nil {
+		return models.StorageQuota{}, fmt.Errorf("get Google storage quota: %w", err)
+	}
+	if about.StorageQuota == nil {
+		return models.StorageQuota{}, errors.New("google storage quota was not returned")
+	}
+	return models.StorageQuota{Used: about.StorageQuota.Usage, Limit: about.StorageQuota.Limit}, nil
+}
+
 // NewRealClient validates that credentials.json exists, loads the persisted
 // token, and builds an authenticated Gmail service. It returns
 // ErrCredentialsMissing if the path is empty, and propagates I/O or auth
@@ -84,9 +98,14 @@ func NewRealClient(credentialsPath string) (*RealClient, error) {
 	if err != nil {
 		return nil, fmt.Errorf("create gmail service: %w", err)
 	}
+	driveSvc, err := drive.NewService(ctx, option.WithTokenSource(ts))
+	if err != nil {
+		return nil, fmt.Errorf("create drive service: %w", err)
+	}
 	return &RealClient{
 		credentialsPath: credentialsPath,
 		service:         svc,
+		driveService:    driveSvc,
 	}, nil
 }
 
@@ -181,12 +200,16 @@ func (r *RealClient) fetchMetadata(messages []*gmail.Message, fetched int) ([]*m
 }
 
 func (r *RealClient) TrashMessages(ids []string) error {
-	for i, id := range ids {
-		if err := r.retryMutation("trash message "+id, func() error {
-			_, err := r.service.Users.Messages.Trash("me", id).Do()
-			return err
+	for start := 0; start < len(ids); start += mutationBatchSize {
+		end := min(start+mutationBatchSize, len(ids))
+		batch := &gmail.BatchModifyMessagesRequest{
+			Ids:         ids[start:end],
+			AddLabelIds: []string{"TRASH"},
+		}
+		if err := r.retryMutation(fmt.Sprintf("trash batch %d-%d", start+1, end), func() error {
+			return r.service.Users.Messages.BatchModify("me", batch).Do()
 		}); err != nil {
-			return fmt.Errorf("trash message %d/%d (%s): %w", i+1, len(ids), id, err)
+			return err
 		}
 	}
 	return nil

@@ -41,6 +41,7 @@ type FakeClient struct {
 	trashed map[string]bool
 	deleted map[string]bool
 	account string
+	Quota   models.StorageQuota
 
 	FailTrash        bool
 	FailTrashAfter   int
@@ -100,6 +101,14 @@ func (f *FakeClient) AccountEmail() (string, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return f.account, nil
+}
+
+// StorageQuota is unavailable for local fixtures because they model only
+// Gmail message metadata, not the connected Google Account.
+func (f *FakeClient) StorageQuota() (models.StorageQuota, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.Quota, nil
 }
 
 // SetAccountEmail changes the fake account identity for account-mismatch tests.
