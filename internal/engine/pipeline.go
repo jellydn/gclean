@@ -131,6 +131,7 @@ func (p *Pipeline) fetchAndClassify(pl *Pipeline) error {
 	if err := pl.Store.ReplaceAll(records); err != nil {
 		return fmt.Errorf("replace scanned metadata: %w", err)
 	}
+	pl.reportScanProgress("Saved metadata locally", len(msgs), len(msgs))
 	pl.scanned = len(msgs)
 	return nil
 }
@@ -167,7 +168,7 @@ func (p *Pipeline) loadPlan(pl *Pipeline) error {
 		})
 	}
 	if err := pl.Store.SetVerdicts(updates); err != nil {
-		return fmt.Errorf("set planner verdicts: %w", err)
+		return fmt.Errorf("set planner verdicts (%d updates): %w", len(updates), err)
 	}
 	pl.decisions = decisions
 	pl.report = rep

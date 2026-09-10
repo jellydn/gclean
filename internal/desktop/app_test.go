@@ -104,6 +104,25 @@ func TestUserFacingErrorForRevokedOAuthToken(t *testing.T) {
 	}
 }
 
+func TestScanPhaseResetsFetchedOnlyWhenPhaseChanges(t *testing.T) {
+	app, _ := newTestApp(t, false)
+	app.setScanStatus(scanStatus{State: "scanning", Fetched: 40})
+	app.updateScanProgress(50)
+	app.updateScanPhase(engine.ScanProgress{Phase: "Classifying Gmail metadata", Fetched: 0, Total: 50})
+	if app.scanState.Phase != "Classifying Gmail metadata" || app.scanState.Fetched != 0 || app.scanState.Total != 50 {
+		t.Fatalf("phase start = %+v, want classify 0 of 50", app.scanState)
+	}
+	app.updateScanPhase(engine.ScanProgress{Phase: "Classifying Gmail metadata", Fetched: 10, Total: 50})
+	app.updateScanPhase(engine.ScanProgress{Phase: "Classifying Gmail metadata", Fetched: 5, Total: 50})
+	if app.scanState.Fetched != 10 || app.scanState.Total != 50 {
+		t.Fatalf("same-phase regression = %+v, want fetched 10", app.scanState)
+	}
+	app.updateScanPhase(engine.ScanProgress{Phase: "Saving metadata locally", Fetched: 50, Total: 50})
+	if app.scanState.Phase != "Saving metadata locally" || app.scanState.Fetched != 50 {
+		t.Fatalf("save phase = %+v, want 50 of 50", app.scanState)
+	}
+}
+
 func TestScanStatusDefaultsToIdle(t *testing.T) {
 	app, _ := newTestApp(t, false)
 	server := httptest.NewServer(app.Handler())

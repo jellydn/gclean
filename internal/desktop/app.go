@@ -85,6 +85,7 @@ type scanStatus struct {
 	State   string `json:"state"`
 	Phase   string `json:"phase,omitempty"`
 	Fetched int    `json:"fetched"`
+	Total   int    `json:"total,omitempty"`
 	Error   string `json:"error,omitempty"`
 }
 
@@ -390,8 +391,13 @@ func (a *App) updateScanProgress(fetched int) {
 func (a *App) updateScanPhase(progress engine.ScanProgress) {
 	a.scanMu.Lock()
 	if a.scanState.State == "scanning" {
-		a.scanState.Phase = progress.Phase
-		a.scanState.Fetched = progress.Fetched
+		if progress.Phase != a.scanState.Phase {
+			a.scanState.Phase = progress.Phase
+			a.scanState.Fetched = progress.Fetched
+		} else if progress.Fetched > a.scanState.Fetched {
+			a.scanState.Fetched = progress.Fetched
+		}
+		a.scanState.Total = progress.Total
 	}
 	a.scanMu.Unlock()
 }
@@ -852,11 +858,8 @@ func (a *App) trash(w http.ResponseWriter, r *http.Request) error {
 	if err != nil {
 		return fmt.Errorf("read undo cache: %w", err)
 	}
-	if len(batch.Records) > 0 {
-		if err := storage.ValidateUndoBatchAccount(batch, account); err != nil {
-			return &statusError{http.StatusConflict, fmt.Sprintf("cannot start a new cleanup while the existing recovery record is unavailable: %v", err)}
-		}
-		return &statusError{http.StatusConflict, "restore the previous cleanup batch before starting another cleanup; gclean keeps one recovery batch at a time"}
+	if err := storage.RefuseNewCleanup(batch, account); err != nil {
+		return &statusError{http.StatusConflict, err.Error()}
 	}
 	p, err := a.plan(account)
 	if err != nil {

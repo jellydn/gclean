@@ -245,8 +245,11 @@ function startScanProgress() {
 		try {
 			const progress = await api("/api/scan/status");
 			if (progress.state === "scanning") {
+				const count = progress.total
+					? `${progress.fetched.toLocaleString()} of ${progress.total.toLocaleString()}`
+					: progress.fetched.toLocaleString();
 				busy(
-					`${progress.phase || "Scanning Gmail metadata"}… ${progress.fetched.toLocaleString()} processed`,
+					`${progress.phase || "Scanning Gmail metadata"}… ${count} processed`,
 					"Message bodies are never downloaded. Cleanup preview starts after local metadata is ready.",
 				);
 			}

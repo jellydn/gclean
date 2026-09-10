@@ -163,7 +163,7 @@ func (s *Store) SetVerdicts(updates []VerdictUpdate) error {
 	defer func() { _ = stmt.Close() }()
 	for _, update := range updates {
 		if _, err := stmt.Exec(update.Verdict, update.Reasons, boolInt(update.Protected), update.ID); err != nil {
-			return err
+			return fmt.Errorf("set verdict %s: %w", update.ID, err)
 		}
 	}
 	return tx.Commit()
