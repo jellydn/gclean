@@ -130,6 +130,10 @@ func TestRealClient_TrashMessages_BatchesAndRetriesTransientErrors(t *testing.T)
 			http.Error(w, "missing trash label", http.StatusBadRequest)
 			return
 		}
+		if !slices.Equal(request.RemoveLabelIds, []string{"INBOX"}) {
+			http.Error(w, "missing inbox removal", http.StatusBadRequest)
+			return
+		}
 		batchesMu.Lock()
 		batches = append(batches, request.Ids)
 		batchesMu.Unlock()
@@ -177,6 +181,41 @@ func TestRealClient_StorageQuota(t *testing.T) {
 	}
 	if quota.Used != 14300000000 || quota.Limit != 15000000000 {
 		t.Fatalf("StorageQuota = %+v", quota)
+	}
+}
+
+func TestRealClient_StorageQuota_UnlimitedWhenLimitOmitted(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet || r.URL.Path != "/drive/v3/about" {
+			http.Error(w, "unexpected request", http.StatusNotFound)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = fmt.Fprint(w, `{"storageQuota":{"usage":"14300000000"}}`)
+	}))
+	defer server.Close()
+
+	quota, err := newHTTPTestClient(t, server).StorageQuota()
+	if err != nil {
+		t.Fatalf("StorageQuota: %v", err)
+	}
+	if quota.Used != 14300000000 || quota.Limit != 0 {
+		t.Fatalf("StorageQuota = %+v, want unlimited limit", quota)
+	}
+}
+
+func TestIsStorageQuotaSetupError(t *testing.T) {
+	if !IsStorageQuotaSetupError(&googleapi.Error{Code: http.StatusForbidden}) {
+		t.Fatal("403 should be a Drive setup error")
+	}
+	if !IsStorageQuotaSetupError(fmt.Errorf("wrap: %w", &googleapi.Error{Code: http.StatusUnauthorized})) {
+		t.Fatal("wrapped 401 should be a Drive setup error")
+	}
+	if IsStorageQuotaSetupError(&googleapi.Error{Code: http.StatusTooManyRequests}) {
+		t.Fatal("429 is not a Drive setup error")
+	}
+	if IsStorageQuotaSetupError(errors.New("network down")) {
+		t.Fatal("plain errors are not Drive setup errors")
 	}
 }
 

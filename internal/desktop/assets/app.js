@@ -132,11 +132,21 @@ function render() {
 			: "Setup required";
 	$("setup").classList.toggle("hidden", connected);
 	if (state.storageQuota) {
-		$("total-storage").textContent = `${bytes(state.storageQuota.used)} of ${bytes(state.storageQuota.limit)}`;
-		$("total-messages").textContent = "Gmail, Drive & Photos";
+		$("storage-label").textContent = "GOOGLE STORAGE";
+		const limit = state.storageQuota.limit ? bytes(state.storageQuota.limit) : "unlimited";
+		$("total-storage").textContent = `${bytes(state.storageQuota.used)} of ${limit}`;
 	} else {
+		$("storage-label").textContent = "ESTIMATED STORAGE";
 		$("total-storage").textContent = bytes(state.stats.EstimatedStorage);
-		$("total-messages").textContent = state.quotaWarning || `${state.stats.TotalMessages.toLocaleString()} Gmail messages indexed`;
+	}
+	$("total-messages").textContent = `${state.stats.TotalMessages.toLocaleString()} Gmail messages indexed`;
+	const warning = $("quota-warning");
+	if (state.quotaWarning) {
+		warning.textContent = state.quotaWarning;
+		warning.classList.remove("hidden");
+	} else {
+		warning.textContent = "";
+		warning.classList.add("hidden");
 	}
 	$("reclaim").textContent = bytes(state.preview.RecoverBytes);
 	$("delete-count").textContent =
@@ -335,7 +345,7 @@ function openDialog(kind) {
 		: "The selected planner-approved messages will move to Gmail Trash. Nothing is permanently deleted, and the last batch can be restored from gclean.";
 	$("dialog-size").textContent = purge
 		? "Permanent"
-		: bytes(state.preview.RecoverBytes);
+		: legacyRecovery ? "No Gmail change" : bytes(state.preview.RecoverBytes);
 	$("dialog-count").textContent = purge
 		? "All messages in Trash"
 		: legacyRecovery ? "Local-only action" : `${state.preview.DeleteCount.toLocaleString()} selected messages`;

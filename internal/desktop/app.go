@@ -38,6 +38,8 @@ const (
 	restoreConfirmation              = "RESTORE"
 	purgeConfirmation                = "EMPTY TRASH PERMANENTLY"
 	removeLegacyRecoveryConfirmation = "REMOVE LEGACY RECOVERY RECORD"
+	quotaCacheTTL                    = 5 * time.Minute
+	driveSetupWarning                = "Enable Google Drive API, then reconnect Google to show account storage usage."
 )
 
 // Config contains process-owned paths and dependencies. Client is lazy so the
@@ -59,21 +61,25 @@ type Config struct {
 // App owns one desktop session. Mutations are serialized and selected senders
 // live only for the session; the preview signature prevents applying stale UI.
 type App struct {
-	cfg       Config
-	store     *storage.Store
-	token     string
-	clientMu  sync.Mutex
-	client    gmailclient.Client
-	selectMu  sync.RWMutex
-	selected  map[string]struct{}
-	limited   bool
-	operation sync.Mutex
-	authMu    sync.RWMutex
-	auth      authStatus
-	scanMu    sync.RWMutex
-	scanState scanStatus
-	originMu  sync.RWMutex
-	host      string
+	cfg           Config
+	store         *storage.Store
+	token         string
+	clientMu      sync.Mutex
+	client        gmailclient.Client
+	selectMu      sync.RWMutex
+	selected      map[string]struct{}
+	limited       bool
+	operation     sync.Mutex
+	authMu        sync.RWMutex
+	auth          authStatus
+	scanMu        sync.RWMutex
+	scanState     scanStatus
+	originMu      sync.RWMutex
+	host          string
+	quotaMu       sync.Mutex
+	cachedQuota   *models.StorageQuota
+	cachedWarning string
+	quotaFetched  time.Time
 }
 
 type authStatus struct {
@@ -599,12 +605,47 @@ func (a *App) clearClient() {
 	a.clientMu.Lock()
 	a.client = nil
 	a.clientMu.Unlock()
+	a.quotaMu.Lock()
+	a.cachedQuota = nil
+	a.cachedWarning = ""
+	a.quotaFetched = time.Time{}
+	a.quotaMu.Unlock()
 }
 
 func (a *App) authInProgress() bool {
 	a.authMu.RLock()
 	defer a.authMu.RUnlock()
 	return a.auth.State == "starting" || a.auth.State == "waiting"
+}
+
+func (a *App) storageQuotaState(client gmailclient.Client) (*models.StorageQuota, string) {
+	a.quotaMu.Lock()
+	if !a.quotaFetched.IsZero() && time.Since(a.quotaFetched) < quotaCacheTTL {
+		quota, warning := a.cachedQuota, a.cachedWarning
+		a.quotaMu.Unlock()
+		return quota, warning
+	}
+	a.quotaMu.Unlock()
+
+	fetched, err := client.StorageQuota()
+	quota, warning := quotaView(fetched, err, a.cfg.FixturePath != "")
+	a.quotaMu.Lock()
+	a.cachedQuota = quota
+	a.cachedWarning = warning
+	a.quotaFetched = time.Now()
+	a.quotaMu.Unlock()
+	return quota, warning
+}
+
+func quotaView(quota models.StorageQuota, err error, fixture bool) (*models.StorageQuota, string) {
+	if err == nil {
+		q := quota
+		return &q, ""
+	}
+	if fixture || !gmailclient.IsStorageQuotaSetupError(err) {
+		return nil, ""
+	}
+	return nil, driveSetupWarning
 }
 
 func (a *App) buildState() (stateResponse, error) {
@@ -619,11 +660,7 @@ func (a *App) buildState() (stateResponse, error) {
 			return stateResponse{}, err
 		}
 		account = resolvedAccount
-		if quota, err := client.StorageQuota(); err == nil && quota.Limit > 0 {
-			storageQuota = &quota
-		} else if a.cfg.FixturePath == "" {
-			quotaWarning = "Enable Google Drive API, then reconnect Google to show account storage usage."
-		}
+		storageQuota, quotaWarning = a.storageQuotaState(client)
 	}
 	lock, err := storage.AcquireMutationLock(a.cfg.CachePath)
 	if err != nil {

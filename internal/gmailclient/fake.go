@@ -36,12 +36,13 @@ import (
 //     deleted set, which RestoreFromTrash/InTrash treat as 404s (gone
 //     forever, not restorable).
 type FakeClient struct {
-	mu      sync.Mutex
-	msgs    []*models.Message
-	trashed map[string]bool
-	deleted map[string]bool
-	account string
-	Quota   models.StorageQuota
+	mu         sync.Mutex
+	msgs       []*models.Message
+	trashed    map[string]bool
+	deleted    map[string]bool
+	account    string
+	Quota      *models.StorageQuota
+	quotaCalls int
 
 	FailTrash        bool
 	FailTrashAfter   int
@@ -103,12 +104,22 @@ func (f *FakeClient) AccountEmail() (string, error) {
 	return f.account, nil
 }
 
-// StorageQuota is unavailable for local fixtures because they model only
-// Gmail message metadata, not the connected Google Account.
+// StorageQuota is unavailable for local fixtures unless a test sets Quota.
+// Fixtures model Gmail message metadata, not the connected Google Account.
 func (f *FakeClient) StorageQuota() (models.StorageQuota, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	return f.Quota, nil
+	f.quotaCalls++
+	if f.Quota == nil {
+		return models.StorageQuota{}, errors.New("storage quota unavailable")
+	}
+	return *f.Quota, nil
+}
+
+func (f *FakeClient) QuotaCalls() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.quotaCalls
 }
 
 // SetAccountEmail changes the fake account identity for account-mismatch tests.

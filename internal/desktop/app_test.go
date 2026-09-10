@@ -18,6 +18,8 @@ import (
 	"gclean/internal/gmailclient"
 	"gclean/internal/models"
 	"gclean/internal/storage"
+
+	"google.golang.org/api/googleapi"
 )
 
 func TestDesktopWorkflowRequiresPreviewAndSupportsRestore(t *testing.T) {
@@ -137,7 +139,7 @@ func TestScanStatusDefaultsToIdle(t *testing.T) {
 
 func TestDesktopStateIncludesGoogleStorageQuota(t *testing.T) {
 	app, fake := newTestApp(t, false)
-	fake.Quota = models.StorageQuota{Used: 14300000000, Limit: 15000000000}
+	fake.Quota = &models.StorageQuota{Used: 14300000000, Limit: 15000000000}
 	server := httptest.NewServer(app.Handler())
 	defer server.Close()
 
@@ -145,6 +147,60 @@ func TestDesktopStateIncludesGoogleStorageQuota(t *testing.T) {
 	doAPI(t, app, server.URL, http.MethodGet, "/api/state", nil, &state, http.StatusOK)
 	if state.StorageQuota == nil || state.StorageQuota.Used != fake.Quota.Used || state.StorageQuota.Limit != fake.Quota.Limit {
 		t.Fatalf("storage quota = %+v, want %+v", state.StorageQuota, fake.Quota)
+	}
+	doAPI(t, app, server.URL, http.MethodGet, "/api/state", nil, &state, http.StatusOK)
+	if fake.QuotaCalls() != 1 {
+		t.Fatalf("StorageQuota calls = %d, want 1 cached result", fake.QuotaCalls())
+	}
+}
+
+func TestDesktopStateIncludesUnlimitedGoogleStorageQuota(t *testing.T) {
+	app, fake := newTestApp(t, false)
+	fake.Quota = &models.StorageQuota{Used: 14300000000, Limit: 0}
+	server := httptest.NewServer(app.Handler())
+	defer server.Close()
+
+	var state stateResponse
+	doAPI(t, app, server.URL, http.MethodGet, "/api/state", nil, &state, http.StatusOK)
+	if state.StorageQuota == nil || state.StorageQuota.Used != fake.Quota.Used || state.StorageQuota.Limit != 0 {
+		t.Fatalf("storage quota = %+v, want unlimited limit", state.StorageQuota)
+	}
+	if state.QuotaWarning != "" {
+		t.Fatalf("quota warning = %q, want empty for a successful unlimited quota", state.QuotaWarning)
+	}
+}
+
+func TestDesktopStateOmitsUnavailableQuota(t *testing.T) {
+	app, _ := newTestApp(t, false)
+	server := httptest.NewServer(app.Handler())
+	defer server.Close()
+
+	var state stateResponse
+	doAPI(t, app, server.URL, http.MethodGet, "/api/state", nil, &state, http.StatusOK)
+	if state.StorageQuota != nil || state.QuotaWarning != "" {
+		t.Fatalf("state quota = %+v warning = %q, want omitted", state.StorageQuota, state.QuotaWarning)
+	}
+}
+
+func TestQuotaView(t *testing.T) {
+	quota, warning := quotaView(models.StorageQuota{Used: 10, Limit: 0}, nil, false)
+	if quota == nil || quota.Used != 10 || quota.Limit != 0 || warning != "" {
+		t.Fatalf("unlimited success = %+v %q", quota, warning)
+	}
+
+	quota, warning = quotaView(models.StorageQuota{}, &googleapi.Error{Code: http.StatusForbidden}, false)
+	if quota != nil || warning != driveSetupWarning {
+		t.Fatalf("403 = %+v %q, want setup warning", quota, warning)
+	}
+
+	quota, warning = quotaView(models.StorageQuota{}, errors.New("timeout"), false)
+	if quota != nil || warning != "" {
+		t.Fatalf("timeout = %+v %q, want no warning", quota, warning)
+	}
+
+	quota, warning = quotaView(models.StorageQuota{}, &googleapi.Error{Code: http.StatusForbidden}, true)
+	if quota != nil || warning != "" {
+		t.Fatalf("fixture 403 = %+v %q, want no warning", quota, warning)
 	}
 }
 

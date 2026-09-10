@@ -64,9 +64,14 @@ func (r *RealClient) AccountEmail() (string, error) {
 	return strings.ToLower(profile.EmailAddress), nil
 }
 
+const storageQuotaTimeout = 2 * time.Second
+
 // StorageQuota reports Google Account storage across Gmail, Drive, and Photos.
+// Limit is 0 when Drive omits it (unlimited / pooled Workspace accounts).
 func (r *RealClient) StorageQuota() (models.StorageQuota, error) {
-	about, err := r.driveService.About.Get().Fields("storageQuota(limit,usage)").Do()
+	ctx, cancel := context.WithTimeout(context.Background(), storageQuotaTimeout)
+	defer cancel()
+	about, err := r.driveService.About.Get().Context(ctx).Fields("storageQuota(limit,usage)").Do()
 	if err != nil {
 		return models.StorageQuota{}, fmt.Errorf("get Google storage quota: %w", err)
 	}
@@ -74,6 +79,16 @@ func (r *RealClient) StorageQuota() (models.StorageQuota, error) {
 		return models.StorageQuota{}, errors.New("google storage quota was not returned")
 	}
 	return models.StorageQuota{Used: about.StorageQuota.Usage, Limit: about.StorageQuota.Limit}, nil
+}
+
+// IsStorageQuotaSetupError reports Drive 401/403 responses that mean the user
+// must enable the Drive API or reconnect with the Drive metadata scope.
+func IsStorageQuotaSetupError(err error) bool {
+	var apiErr *googleapi.Error
+	if !errors.As(err, &apiErr) {
+		return false
+	}
+	return apiErr.Code == http.StatusForbidden || apiErr.Code == http.StatusUnauthorized
 }
 
 // NewRealClient validates that credentials.json exists, loads the persisted
@@ -203,8 +218,9 @@ func (r *RealClient) TrashMessages(ids []string) error {
 	for start := 0; start < len(ids); start += mutationBatchSize {
 		end := min(start+mutationBatchSize, len(ids))
 		batch := &gmail.BatchModifyMessagesRequest{
-			Ids:         ids[start:end],
-			AddLabelIds: []string{"TRASH"},
+			Ids:            ids[start:end],
+			AddLabelIds:    []string{"TRASH"},
+			RemoveLabelIds: []string{"INBOX"},
 		}
 		if err := r.retryMutation(fmt.Sprintf("trash batch %d-%d", start+1, end), func() error {
 			return r.service.Users.Messages.BatchModify("me", batch).Do()

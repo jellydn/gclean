@@ -33,7 +33,7 @@
       </section>
 
       <section id="overview" class="overview">
-        <div class="metric hero-metric"><small>GOOGLE STORAGE</small><strong id="total-storage">—</strong><span id="total-messages">No scan yet</span></div>
+        <div class="metric hero-metric"><small id="storage-label">ESTIMATED STORAGE</small><strong id="total-storage">—</strong><span id="total-messages">No scan yet</span><span id="quota-warning" class="hidden"></span></div>
         <div class="metric reclaim"><small>SAFE TO RECLAIM</small><strong id="reclaim">—</strong><span id="delete-count">Preview required</span></div>
         <div class="metric"><small>PROTECTED / KEPT</small><strong id="keep-count">—</strong><span>Contacts, recent & important</span></div>
         <div class="scan-card"><div><small>DISCOVER</small><h2>Refresh Gmail metadata</h2><p>Reads headers, labels, dates, and size estimates. It never downloads message bodies or changes Gmail.</p></div><button id="scan">Scan Gmail <span>→</span></button></div>
@@ -91,7 +91,7 @@
           <section class="settings-card oauth-card" aria-labelledby="oauth-title">
             <div class="card-heading"><div><p class="eyebrow">GOOGLE OAUTH</p><h3 id="oauth-title">Account connection</h3></div><span id="oauth-badge" class="badge">Checking…</span></div>
             <p class="field-copy">gclean requests Gmail metadata and modify access for scan, Trash, and restore, plus Google storage metadata. Credentials and tokens stay on this computer and their contents are never shown here.</p>
-            <ol class="oauth-steps"><li><span>1</span><div><b>Google Cloud project</b><small>Enable the Gmail API and configure the OAuth consent screen.</small></div></li><li><span>2</span><div><b>Desktop app credentials</b><small>Create an OAuth client with application type “Desktop app,” then download its JSON file.</small></div></li><li><span>3</span><div><b>Connect safely</b><small>Choose the file below, then authorize gclean in your browser.</small></div></li></ol>
+            <ol class="oauth-steps"><li><span>1</span><div><b>Google Cloud project</b><small>Enable the Gmail API and Google Drive API, then configure the OAuth consent screen.</small></div></li><li><span>2</span><div><b>Desktop app credentials</b><small>Create an OAuth client with application type “Desktop app,” then download its JSON file.</small></div></li><li><span>3</span><div><b>Connect safely</b><small>Choose the file below, then authorize gclean in your browser. Reconnect after enabling Drive to show account storage.</small></div></li></ol>
             <div class="credential-row"><div><b>OAuth credentials</b><small id="credential-copy">No file configured</small></div><label class="file-button">Choose JSON<input id="credentials-file" type="file" accept="application/json,.json"></label></div>
             <div class="oauth-actions"><button id="settings-connect" type="button">Connect / reconnect</button><button id="disconnect" type="button" class="secondary">Disconnect</button></div>
             <p class="requirement"><span>↻</span><span><b>Re-authentication</b> is required after replacing credentials. Disconnect removes only the local token; it does not revoke access in Google Account settings.</span></p>
