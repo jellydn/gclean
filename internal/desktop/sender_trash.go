@@ -90,7 +90,7 @@ func (a *App) senderTrash(w http.ResponseWriter, r *http.Request) error {
 		return &statusError{http.StatusBadRequest, "no messages from that exact sender were found"}
 	}
 	if request.PreviewID == "" || request.PreviewID != preview.ID {
-		return &statusError{http.StatusConflict, "sender preview changed; review the refreshed count before continuing"}
+		return &statusError{http.StatusConflict, "sender preview changed; preview again and review the count before continuing"}
 	}
 	journal := &engine.Reconciler{
 		Store: a.store, CachePath: a.cfg.CachePath, Account: account,

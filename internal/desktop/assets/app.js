@@ -136,13 +136,17 @@ function render() {
 	$("setup").classList.toggle("hidden", connected);
 	if (state.storageQuota) {
 		$("storage-label").textContent = "GOOGLE STORAGE";
-		const limit = state.storageQuota.limit ? bytes(state.storageQuota.limit) : "unlimited";
-		$("total-storage").textContent = `${bytes(state.storageQuota.used)} of ${limit}`;
+		const limit = state.storageQuota.limit
+			? bytes(state.storageQuota.limit)
+			: "unlimited";
+		$("total-storage").textContent =
+			`${bytes(state.storageQuota.used)} of ${limit}`;
 	} else {
 		$("storage-label").textContent = "ESTIMATED STORAGE";
 		$("total-storage").textContent = bytes(state.stats.EstimatedStorage);
 	}
-	$("total-messages").textContent = `${state.stats.TotalMessages.toLocaleString()} Gmail messages indexed`;
+	$("total-messages").textContent =
+		`${state.stats.TotalMessages.toLocaleString()} Gmail messages indexed`;
 	const warning = $("quota-warning");
 	if (state.quotaWarning) {
 		warning.textContent = state.quotaWarning;
@@ -365,7 +369,9 @@ function renderSenderPreview() {
 }
 $("open-trash").addEventListener("click", () => openDialog("trash"));
 $("open-purge").addEventListener("click", () => openDialog("purge"));
-$("open-legacy-recovery").addEventListener("click", () => openDialog("legacyRecovery"));
+$("open-legacy-recovery").addEventListener("click", () =>
+	openDialog("legacyRecovery"),
+);
 function requiredConfirmation() {
 	if (action === "purge") return "EMPTY TRASH PERMANENTLY";
 	if (action === "legacyRecovery") return "REMOVE LEGACY RECOVERY RECORD";
@@ -428,7 +434,8 @@ function openDialog(kind) {
 	$("dialog-copy").textContent = content.copy;
 	$("dialog-size").textContent = content.size;
 	$("dialog-count").textContent = content.count;
-	$("confirmation-label").querySelector("b").textContent = requiredConfirmation();
+	$("confirmation-label").querySelector("b").textContent =
+		requiredConfirmation();
 	$("confirmation").value = "";
 	$("confirm-action").textContent = content.button;
 	$("confirm-action").className = content.className;
@@ -462,12 +469,16 @@ $("confirm-action").addEventListener("click", async (e) => {
 			: { confirmation, previewId: state.previewId };
 	$("confirm-dialog").close();
 	busy(
-		action === "purge" ? "Emptying Gmail Trash…" : action === "legacyRecovery" ? "Removing legacy recovery record…" : "Moving messages to Trash…",
+		action === "purge"
+			? "Emptying Gmail Trash…"
+			: action === "legacyRecovery"
+				? "Removing legacy recovery record…"
+				: "Moving messages to Trash…",
 		action === "purge"
 			? "This permanent operation may take several minutes."
 			: action === "legacyRecovery"
 				? "Gmail messages will not change."
-			: "An undo record is being saved first.",
+				: "An undo record is being saved first.",
 	);
 	try {
 		const result = await api(path, payload);
@@ -480,6 +491,11 @@ $("confirm-action").addEventListener("click", async (e) => {
 		}
 		await load();
 	} catch (err) {
+		if (action === "sender") {
+			senderAction = null;
+			senderPreview = null;
+			renderSenderPreview();
+		}
 		toast(err.message);
 		await load();
 	} finally {

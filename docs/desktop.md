@@ -181,11 +181,22 @@ lint, and portable packaging for pull requests and pushes to `main`. Its macOS
 runner ad-hoc signs and verifies the macOS binaries; this needs no Apple
 Developer credentials. The portable archives and checksum manifest are
 retained as a workflow artifact for 14 days. These are explicitly beta/tester
-artifacts. CI archive names use the immutable commit-based version
+artifacts. Pull-request archive names use the immutable commit-based version
 `ci-<12-character SHA>`.
 
-Pushing a SemVer tag such as `v1.2.3` or `v1.2.3-rc.1` runs the same checks and
-publishes a GitHub **prerelease** containing:
+After checks and packaging pass on `main`, the workflow publishes a GitHub
+**prerelease** for that exact commit. It increments the patch of the highest
+`vMAJOR.MINOR.PATCH` tag, starting at `v0.0.1` when no such tag exists. A retry
+reuses a version already assigned to the commit. Main and tag builds share a
+release concurrency group to prevent competing version allocation.
+
+This follows [Oak's automatic patch-release pattern](https://github.com/jellydn/oak/blob/main/.github/workflows/auto-release.yml),
+but needs no version-file commit, Xcode setup, or appcast update. Packaging and
+publishing stay in one run because tags created with `GITHUB_TOKEN` do not
+trigger a second workflow.
+
+Pushing an explicit SemVer tag such as `v1.2.3` or `v1.2.3-rc.1` is also
+supported. Both paths publish:
 
 - `gclean-<version>-darwin-{amd64,arm64}.tar.gz`
 - `gclean-<version>-linux-{amd64,arm64}.tar.gz`
@@ -196,7 +207,8 @@ The workflow verifies the checksums before publishing and uses only the
 short-lived repository `GITHUB_TOKEN`; no release secrets are required. A
 rerun for an existing tag replaces that tag's assets with the freshly verified
 outputs. Actions are pinned to immutable revisions, permissions default to
-read-only, and only the tag-only release job receives `contents: write`.
+read-only, and only the release job receives `contents: write`. A tag that
+belongs to another commit is rejected before any assets are replaced.
 
 The macOS beta binaries are ad-hoc signed; Windows and Linux beta binaries are
 unsigned. No Developer ID or notarization credentials are configured in the

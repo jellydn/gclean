@@ -34,7 +34,9 @@ See [Desktop setup and packaging](docs/desktop.md) for Google Cloud Console,
 security, cross-platform builds, and platform-specific launch notes.
 Pull requests and `main` builds produce short-lived portable workflow
 artifacts, with macOS binaries ad-hoc signed for credential-free beta testing.
-SemVer tags (`v1.2.3`) publish macOS, Linux, and Windows archives plus
+Successful `main` builds automatically publish a new patch-version prerelease;
+explicit SemVer tags (`v1.2.3`) are also supported. Releases include macOS,
+Linux, and Windows archives plus
 `SHA256SUMS` as GitHub prereleases. These beta artifacts are not Apple-notarized
 production releases; see the desktop guide for checksum, Gatekeeper, and
 quarantine instructions. Container images are intentionally not published
@@ -186,7 +188,7 @@ production use.
 ## Roadmap → next session
 
 - ~~Reconcile local SQLite and undo-cache state after partial or interrupted real Gmail mutations~~ — done (InTrash reconcile)
-- Live-account end-to-end validation (TC-01…TC-10 in `.planning/live-account-mutation-test-plan.md`)
+- Live-account end-to-end validation (TC-01…TC-11 in `.planning/live-account-mutation-test-plan.md`)
 - People-API enrichment (`IsContact`) on scan
 - Native signed/notarized installer bundles (the portable single binary and
   browser-hosted desktop UI are available now)
