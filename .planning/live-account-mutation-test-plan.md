@@ -194,6 +194,31 @@ worth a manual negative test: craft the cohort to include a nonexistent ID (see 
 6. **Negative assertion**: undo must not abort with a 404; the deleted IDs must never
    appear in the local store.
 
+### TC-11 — Exact-sender preview, stale guard, Trash, and undo
+
+1. In the dedicated account, seed at least 501 messages from one disposable
+   sender so the Gmail list crosses its 500-message page boundary. Also seed:
+   - one message from an address that only contains the target address text;
+   - one exact-sender message in Spam;
+   - one exact-sender message already in Trash;
+   - exact-sender messages marked Starred and Important.
+2. Run `gclean trash-sender <address>` and record its count, estimated size, and
+   `--preview-id` command. **Expect**: the count includes the exact-sender Inbox,
+   Spam, Starred, and Important messages; excludes the existing Trash message;
+   and excludes the lookalike sender.
+3. Deliver one more exact-sender message, then run the recorded command with its
+   old preview ID. **Expect**: the command fails with `sender preview changed` and
+   no message moves to Trash.
+4. Run a fresh preview, then run its printed `--preview-id ... --yes` command.
+   **Expect**: every message in that fresh exact-sender cohort moves to Trash;
+   the lookalike message remains outside Trash; the pre-existing Trash message is
+   not added to the gclean undo batch.
+5. Run `gclean undo`. **Expect**: exactly the fresh preview cohort is restored;
+   the message that was already in Trash remains there; the undo cache is removed.
+6. Repeat steps 2–5 from the desktop **Sender cleanup** section. Before apply,
+   verify the dialog shows the exact normalized address, count, estimated size,
+   protected-mail warning, and requires `MOVE SENDER MAIL TO TRASH`.
+
 ## Verification tooling
 
 - **Gmail-side**: `label:trash`, `in:anywhere`, `subject:` searches; compare message IDs
@@ -216,9 +241,11 @@ worth a manual negative test: craft the cohort to include a nonexistent ID (see 
 ## Exit criteria
 
 - [ ] G1–G5 safety gates pass with no Gmail-side side effects on failure paths
-- [ ] TC-01…TC-10 pass on a live account; IDs verified on the Gmail side
+- [ ] TC-01…TC-11 pass on a live account; IDs verified on the Gmail side
 - [ ] TC-10: after out-of-band permanent deletion, `undo` restores only the survivors
       (no ghost rows, no 404 abort, cache removed)
+- [ ] TC-11: exact-sender pagination, Spam inclusion, Trash/lookalike exclusion,
+      stale-preview refusal, CLI/desktop confirmation, and undo pass
 - [ ] `label:trash` count after TC-07 = 0 (batching + pagination correct)
 - [ ] Undo cache lifecycle verified: created atomically before mutation, non-empty
       blocks re-clean, removed by `undo` and `purge`
