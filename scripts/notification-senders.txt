@@ -36,12 +36,9 @@ notifications@openai1.discoursemail.com
 update@grafana.com
 no-reply@laravel.com
 notifications@latitude.sh
-notifications@calendly.com
 no-reply@todoist.com
 noreply@codetriage.com
 no-reply@email.slackhq.com
-no-reply@us.greenhouse-mail.io
-notifications@coinhako.com
 notifications@artstation.com
 info@notifications.static.app
 engineering@notifications.polar.sh
