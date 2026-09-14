@@ -24,7 +24,11 @@ while [[ $# -gt 0 ]]; do
   case "$1" in
     --yes) yes=1; shift ;;
     -h|--help) usage; exit 0 ;;
-    --) shift; break ;;
+    --)
+      shift
+      if [[ $# -gt 0 ]]; then sender_arg=$1; shift; fi
+      break
+      ;;
     -*) echo "unknown flag: $1" >&2; usage >&2; exit 2 ;;
     *) sender_arg=$1; shift; break ;;
   esac
@@ -64,7 +68,10 @@ if [[ $yes -eq 1 ]]; then
     exit 1
   fi
   run_lock_held=1
-  trap release_run_lock EXIT HUP INT TERM
+  trap release_run_lock EXIT
+  trap 'exit 129' HUP
+  trap 'exit 130' INT
+  trap 'exit 143' TERM
 fi
 
 load_senders() {
