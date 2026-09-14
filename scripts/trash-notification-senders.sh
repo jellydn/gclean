@@ -48,6 +48,24 @@ else
 fi
 
 cache=${GCLEAN_UNDO_CACHE:-"$HOME/.config/gclean/undo-cache.json"}
+run_lock=${cache}.notification-cleanup.lock
+run_lock_held=0
+
+release_run_lock() {
+  if [[ $run_lock_held -eq 1 ]]; then
+    rmdir "$run_lock" 2>/dev/null || true
+  fi
+}
+
+if [[ $yes -eq 1 ]]; then
+  mkdir -p "$(dirname "$cache")"
+  if ! mkdir "$run_lock" 2>/dev/null; then
+    echo "another notification cleanup is already running for $cache" >&2
+    exit 1
+  fi
+  run_lock_held=1
+  trap release_run_lock EXIT HUP INT TERM
+fi
 
 load_senders() {
   if [[ -n $sender_arg ]]; then
@@ -66,8 +84,11 @@ rotate_undo_if_needed() {
     return 0
   fi
   local backup
-  backup=${cache}.bak-$(date +%Y%m%dT%H%M%S)
-  mv "$cache" "$backup"
+  backup=$(mktemp "${cache}.bak-XXXXXXXX")
+  if ! mv "$cache" "$backup"; then
+    rm -f "$backup"
+    return 1
+  fi
   echo "Moved pending undo cache aside to $backup (gclean undo will track only the next batch)."
 }
 
