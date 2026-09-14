@@ -99,6 +99,19 @@ func TestSaveUndoCache_RoundTripsAtomically(t *testing.T) {
 	}
 }
 
+func TestRefuseNewCleanup_BlocksPendingAndLegacyBatches(t *testing.T) {
+	if err := RefuseNewCleanup(UndoBatch{}, "acct"); err != nil {
+		t.Fatalf("empty batch: %v", err)
+	}
+	if err := RefuseNewCleanup(UndoBatch{Account: "acct", Records: []StoredMessage{{ID: "m1"}}}, "acct"); err == nil || !strings.Contains(err.Error(), "restore the previous cleanup batch") {
+		t.Fatalf("pending batch error = %v", err)
+	}
+	err := RefuseNewCleanup(UndoBatch{Records: []StoredMessage{{ID: "legacy"}}}, "acct")
+	if err == nil || !strings.Contains(err.Error(), "existing recovery record is unavailable") {
+		t.Fatalf("legacy batch error = %v", err)
+	}
+}
+
 func TestSaveUndoCache_DoesNotOverwriteExistingBatch(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "undo-cache.json")
 	if err := SaveUndoCache(path, []StoredMessage{{ID: "m1"}}); err != nil {

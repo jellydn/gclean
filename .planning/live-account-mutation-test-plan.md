@@ -75,7 +75,7 @@ mutating, and compare IDs after, rather than trusting counts alone.
 | G2 | `--yes` gate (purge) | `gclean purge` | `Refusing to purge without --yes…`, exit non-zero, Trash untouched |
 | G3 | §15 non-junk protection | `gclean dry-run` | every `VerdictDelete` message is classified junk; no protected/starred/important/contact/recent message in the delete cohort |
 | G4 | Cache-write failure aborts clean | point `GCLEAN_UNDO_CACHE` at an unwritable path, then `gclean clean --yes` | clean fails **before** Gmail mutation; `label:trash` count unchanged; error names the cache |
-| G5 | Cache overwrite protection | run a successful `clean --yes`, then immediately `clean --yes` again with a new cohort | second run fails (`undo cache already exists…`); `label:trash` count reflects only the first cohort |
+| G5 | Cache overwrite protection | run a successful `clean --yes`, then immediately `clean --yes` again with a new cohort | second run fails (`restore the previous cleanup batch…`); `label:trash` count reflects only the first cohort |
 
 ## Test cases
 

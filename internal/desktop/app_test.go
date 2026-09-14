@@ -18,6 +18,8 @@ import (
 	"gclean/internal/gmailclient"
 	"gclean/internal/models"
 	"gclean/internal/storage"
+
+	"google.golang.org/api/googleapi"
 )
 
 func TestDesktopWorkflowRequiresPreviewAndSupportsRestore(t *testing.T) {
@@ -60,6 +62,12 @@ func TestDesktopWorkflowRequiresPreviewAndSupportsRestore(t *testing.T) {
 
 	doAPI(t, app, server.URL, http.MethodPost, "/api/selection", actionRequest{Senders: []string{state.Senders[0].Email}}, &state, http.StatusOK)
 	var apiError map[string]string
+	doAPI(t, app, server.URL, http.MethodPost, "/api/trash", actionRequest{Confirmation: "MOVE", PreviewID: state.PreviewID}, &apiError, http.StatusBadRequest)
+	if !strings.Contains(apiError["error"], "type MOVE TO TRASH") || len(fake.TrashedIDs()) != 0 {
+		t.Fatalf("incorrect confirmation changed Gmail: error=%q trashed=%v", apiError["error"], fake.TrashedIDs())
+	}
+
+	apiError = nil
 	doAPI(t, app, server.URL, http.MethodPost, "/api/trash", actionRequest{Confirmation: trashConfirmation, PreviewID: "stale"}, &apiError, http.StatusConflict)
 
 	var trashed actionResponse
@@ -98,6 +106,25 @@ func TestUserFacingErrorForRevokedOAuthToken(t *testing.T) {
 	}
 }
 
+func TestScanPhaseResetsFetchedOnlyWhenPhaseChanges(t *testing.T) {
+	app, _ := newTestApp(t, false)
+	app.setScanStatus(scanStatus{State: "scanning", Fetched: 40})
+	app.updateScanProgress(50)
+	app.updateScanPhase(engine.ScanProgress{Phase: "Classifying Gmail metadata", Fetched: 0, Total: 50})
+	if app.scanState.Phase != "Classifying Gmail metadata" || app.scanState.Fetched != 0 || app.scanState.Total != 50 {
+		t.Fatalf("phase start = %+v, want classify 0 of 50", app.scanState)
+	}
+	app.updateScanPhase(engine.ScanProgress{Phase: "Classifying Gmail metadata", Fetched: 10, Total: 50})
+	app.updateScanPhase(engine.ScanProgress{Phase: "Classifying Gmail metadata", Fetched: 5, Total: 50})
+	if app.scanState.Fetched != 10 || app.scanState.Total != 50 {
+		t.Fatalf("same-phase regression = %+v, want fetched 10", app.scanState)
+	}
+	app.updateScanPhase(engine.ScanProgress{Phase: "Saving metadata locally", Fetched: 50, Total: 50})
+	if app.scanState.Phase != "Saving metadata locally" || app.scanState.Fetched != 50 {
+		t.Fatalf("save phase = %+v, want 50 of 50", app.scanState)
+	}
+}
+
 func TestScanStatusDefaultsToIdle(t *testing.T) {
 	app, _ := newTestApp(t, false)
 	server := httptest.NewServer(app.Handler())
@@ -107,6 +134,73 @@ func TestScanStatusDefaultsToIdle(t *testing.T) {
 	doAPI(t, app, server.URL, http.MethodGet, "/api/scan/status", nil, &status, http.StatusOK)
 	if status.State != "idle" || status.Fetched != 0 {
 		t.Fatalf("scan status = %+v, want idle with no messages", status)
+	}
+}
+
+func TestDesktopStateIncludesGoogleStorageQuota(t *testing.T) {
+	app, fake := newTestApp(t, false)
+	fake.Quota = &models.StorageQuota{Used: 14300000000, Limit: 15000000000}
+	server := httptest.NewServer(app.Handler())
+	defer server.Close()
+
+	var state stateResponse
+	doAPI(t, app, server.URL, http.MethodGet, "/api/state", nil, &state, http.StatusOK)
+	if state.StorageQuota == nil || state.StorageQuota.Used != fake.Quota.Used || state.StorageQuota.Limit != fake.Quota.Limit {
+		t.Fatalf("storage quota = %+v, want %+v", state.StorageQuota, fake.Quota)
+	}
+	doAPI(t, app, server.URL, http.MethodGet, "/api/state", nil, &state, http.StatusOK)
+	if fake.QuotaCalls() != 1 {
+		t.Fatalf("StorageQuota calls = %d, want 1 cached result", fake.QuotaCalls())
+	}
+}
+
+func TestDesktopStateIncludesUnlimitedGoogleStorageQuota(t *testing.T) {
+	app, fake := newTestApp(t, false)
+	fake.Quota = &models.StorageQuota{Used: 14300000000, Limit: 0}
+	server := httptest.NewServer(app.Handler())
+	defer server.Close()
+
+	var state stateResponse
+	doAPI(t, app, server.URL, http.MethodGet, "/api/state", nil, &state, http.StatusOK)
+	if state.StorageQuota == nil || state.StorageQuota.Used != fake.Quota.Used || state.StorageQuota.Limit != 0 {
+		t.Fatalf("storage quota = %+v, want unlimited limit", state.StorageQuota)
+	}
+	if state.QuotaWarning != "" {
+		t.Fatalf("quota warning = %q, want empty for a successful unlimited quota", state.QuotaWarning)
+	}
+}
+
+func TestDesktopStateOmitsUnavailableQuota(t *testing.T) {
+	app, _ := newTestApp(t, false)
+	server := httptest.NewServer(app.Handler())
+	defer server.Close()
+
+	var state stateResponse
+	doAPI(t, app, server.URL, http.MethodGet, "/api/state", nil, &state, http.StatusOK)
+	if state.StorageQuota != nil || state.QuotaWarning != "" {
+		t.Fatalf("state quota = %+v warning = %q, want omitted", state.StorageQuota, state.QuotaWarning)
+	}
+}
+
+func TestQuotaView(t *testing.T) {
+	quota, warning := quotaView(models.StorageQuota{Used: 10, Limit: 0}, nil, false)
+	if quota == nil || quota.Used != 10 || quota.Limit != 0 || warning != "" {
+		t.Fatalf("unlimited success = %+v %q", quota, warning)
+	}
+
+	quota, warning = quotaView(models.StorageQuota{}, &googleapi.Error{Code: http.StatusForbidden}, false)
+	if quota != nil || warning != driveSetupWarning {
+		t.Fatalf("403 = %+v %q, want setup warning", quota, warning)
+	}
+
+	quota, warning = quotaView(models.StorageQuota{}, errors.New("timeout"), false)
+	if quota != nil || warning != "" {
+		t.Fatalf("timeout = %+v %q, want no warning", quota, warning)
+	}
+
+	quota, warning = quotaView(models.StorageQuota{}, &googleapi.Error{Code: http.StatusForbidden}, true)
+	if quota != nil || warning != "" {
+		t.Fatalf("fixture 403 = %+v %q, want no warning", quota, warning)
 	}
 }
 
@@ -139,6 +233,59 @@ func TestDesktopRefusesCrossAccountRestoreWithoutLosingUndo(t *testing.T) {
 	}
 	if batch.Account != "fixture" || len(batch.Records) != trashed.Count || len(fake.TrashedIDs()) != trashed.Count {
 		t.Fatalf("undo was changed after mismatch: batch=%+v trash=%v", batch, fake.TrashedIDs())
+	}
+}
+
+func TestDesktopRefusesNewTrashWhileRecoveryIsPending(t *testing.T) {
+	app, fake := newTestApp(t, false)
+	server := httptest.NewServer(app.Handler())
+	defer server.Close()
+
+	var scan actionResponse
+	doAPI(t, app, server.URL, http.MethodPost, "/api/scan", map[string]any{}, &scan, http.StatusOK)
+	var state stateResponse
+	doAPI(t, app, server.URL, http.MethodGet, "/api/state", nil, &state, http.StatusOK)
+	var trashed actionResponse
+	doAPI(t, app, server.URL, http.MethodPost, "/api/trash", actionRequest{Confirmation: trashConfirmation, PreviewID: state.PreviewID}, &trashed, http.StatusOK)
+
+	doAPI(t, app, server.URL, http.MethodGet, "/api/state", nil, &state, http.StatusOK)
+	if !state.RecoveryPending || state.UndoCount != trashed.Count {
+		t.Fatalf("state = %+v, want a pending recovery batch", state)
+	}
+
+	var apiError map[string]string
+	doAPI(t, app, server.URL, http.MethodPost, "/api/trash", actionRequest{Confirmation: trashConfirmation, PreviewID: state.PreviewID}, &apiError, http.StatusConflict)
+	if !strings.Contains(apiError["error"], "restore the previous cleanup batch") {
+		t.Fatalf("trash conflict = %q", apiError["error"])
+	}
+	if got := fake.TrashedIDs(); len(got) != trashed.Count {
+		t.Fatalf("new trash request changed Gmail: %v", got)
+	}
+}
+
+func TestDesktopRemovesLegacyRecoveryOnlyAfterConfirmation(t *testing.T) {
+	app, fake := newTestApp(t, false)
+	server := httptest.NewServer(app.Handler())
+	defer server.Close()
+	if err := storage.SaveUndoCache(app.cfg.CachePath, []storage.StoredMessage{{ID: "legacy"}}); err != nil {
+		t.Fatal(err)
+	}
+
+	var state stateResponse
+	doAPI(t, app, server.URL, http.MethodGet, "/api/state", nil, &state, http.StatusOK)
+	if !state.LegacyRecovery || !state.RecoveryPending {
+		t.Fatalf("state = %+v, want a blocked legacy recovery record", state)
+	}
+	var apiError map[string]string
+	doAPI(t, app, server.URL, http.MethodPost, "/api/recovery/legacy/remove", actionRequest{Confirmation: "REMOVE"}, &apiError, http.StatusBadRequest)
+	if len(fake.TrashedIDs()) != 0 {
+		t.Fatalf("incorrect legacy removal changed Gmail: %v", fake.TrashedIDs())
+	}
+	var removed actionResponse
+	doAPI(t, app, server.URL, http.MethodPost, "/api/recovery/legacy/remove", actionRequest{Confirmation: removeLegacyRecoveryConfirmation}, &removed, http.StatusOK)
+	batch, err := storage.LoadUndoBatch(app.cfg.CachePath)
+	if err != nil || len(batch.Records) != 0 {
+		t.Fatalf("legacy recovery record remains: batch=%+v err=%v", batch, err)
 	}
 }
 

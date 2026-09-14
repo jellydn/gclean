@@ -25,7 +25,7 @@ func newLoginCmd(out, errOut io.Writer) *cobra.Command {
 				_, _ = fmt.Fprintf(errOut, "gclean login: %s not found.\n\n", p)
 				_, _ = fmt.Fprintln(errOut, "Setup steps:")
 				_, _ = fmt.Fprintln(errOut, "  1. Create a Google Cloud Console project: https://console.cloud.google.com/")
-				_, _ = fmt.Fprintln(errOut, "  2. Enable the Gmail API.")
+				_, _ = fmt.Fprintln(errOut, "  2. Enable the Gmail API and Google Drive API.")
 				_, _ = fmt.Fprintln(errOut, "  3. Create an OAuth Desktop client (type: Desktop app).")
 				_, _ = fmt.Fprintln(errOut, "  4. Download credentials.json and save it to "+p)
 				_, _ = fmt.Fprintln(errOut, "  5. Re-run `gclean login`.")

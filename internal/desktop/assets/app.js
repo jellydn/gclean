@@ -134,9 +134,23 @@ function render() {
 			? "Gmail connected"
 			: "Setup required";
 	$("setup").classList.toggle("hidden", connected);
-	$("total-storage").textContent = bytes(state.stats.EstimatedStorage);
-	$("total-messages").textContent =
-		`${state.stats.TotalMessages.toLocaleString()} messages indexed`;
+	if (state.storageQuota) {
+		$("storage-label").textContent = "GOOGLE STORAGE";
+		const limit = state.storageQuota.limit ? bytes(state.storageQuota.limit) : "unlimited";
+		$("total-storage").textContent = `${bytes(state.storageQuota.used)} of ${limit}`;
+	} else {
+		$("storage-label").textContent = "ESTIMATED STORAGE";
+		$("total-storage").textContent = bytes(state.stats.EstimatedStorage);
+	}
+	$("total-messages").textContent = `${state.stats.TotalMessages.toLocaleString()} Gmail messages indexed`;
+	const warning = $("quota-warning");
+	if (state.quotaWarning) {
+		warning.textContent = state.quotaWarning;
+		warning.classList.remove("hidden");
+	} else {
+		warning.textContent = "";
+		warning.classList.add("hidden");
+	}
 	$("reclaim").textContent = bytes(state.preview.RecoverBytes);
 	$("delete-count").textContent =
 		`${state.preview.DeleteCount.toLocaleString()} messages in preview`;
@@ -144,14 +158,20 @@ function render() {
 	$("selected-storage").textContent = bytes(state.preview.RecoverBytes);
 	$("selected-count").textContent =
 		`${state.preview.DeleteCount.toLocaleString()} messages`;
-	$("open-trash").disabled = !connected || !state.preview.DeleteCount;
+	$("open-trash").disabled =
+		!connected || !state.preview.DeleteCount || state.recoveryPending;
+	$("open-trash").title = state.recoveryPending
+		? "Restore the previous cleanup batch before starting another cleanup"
+		: "";
 	$("preview-sender").disabled = !connected;
+	$("open-sender-trash").disabled = !senderPreview?.count || state.recoveryPending;
 	$("undo-copy").textContent = state.recoveryWarning
 		? `Recovery is paused: ${state.recoveryWarning}`
 		: state.undoCount
-			? `${state.undoCount.toLocaleString()} messages from the last cleanup can be restored.`
+			? `${state.undoCount.toLocaleString()} messages from the last cleanup can be restored. Restore this batch before starting another cleanup.`
 			: "No gclean batch is currently waiting in Trash.";
 	$("restore").disabled = !connected || !state.undoCount;
+	$("open-legacy-recovery").classList.toggle("hidden", !state.legacyRecovery);
 	$("open-purge").disabled = !connected || !state.purgeAllowed;
 	$("open-purge").title = state.purgeAllowed
 		? "Permanently empty all Gmail Trash"
@@ -240,9 +260,12 @@ function startScanProgress() {
 		try {
 			const progress = await api("/api/scan/status");
 			if (progress.state === "scanning") {
+				const count = progress.total
+					? `${progress.fetched.toLocaleString()} of ${progress.total.toLocaleString()}`
+					: progress.fetched.toLocaleString();
 				busy(
-					`Scanning Gmail metadata… ${progress.fetched.toLocaleString()} fetched`,
-					"Showing verified Gmail metadata progress. Message bodies are never downloaded.",
+					`${progress.phase || "Scanning Gmail metadata"}… ${count} processed`,
+					"Message bodies are never downloaded. Cleanup preview starts after local metadata is ready.",
 				);
 			}
 		} catch (_) {
@@ -259,6 +282,10 @@ $("scan").addEventListener("click", async () => {
 	try {
 		const result = await api("/api/scan", {});
 		toast(result.message, true);
+		busy(
+			"Preparing cleanup preview…",
+			"Applying protection settings and cleanup rules to local metadata.",
+		);
 		await load();
 	} catch (e) {
 		toast(e.message);
@@ -331,10 +358,24 @@ function renderSenderPreview() {
 	$("sender-preview-count").textContent = senderPreview.count.toLocaleString();
 	$("sender-preview-size").textContent =
 		`${bytes(senderPreview.bytes)} estimated`;
-	$("open-sender-trash").disabled = !senderPreview.count;
+	$("open-sender-trash").disabled = !senderPreview.count || state.recoveryPending;
 }
 $("open-trash").addEventListener("click", () => openDialog("trash"));
 $("open-purge").addEventListener("click", () => openDialog("purge"));
+$("open-legacy-recovery").addEventListener("click", () => openDialog("legacyRecovery"));
+function requiredConfirmation() {
+	if (action === "purge") return "EMPTY TRASH PERMANENTLY";
+	if (action === "legacyRecovery") return "REMOVE LEGACY RECOVERY RECORD";
+	if (action === "sender") return "MOVE SENDER MAIL TO TRASH";
+	return "MOVE TO TRASH";
+}
+function updateConfirmationButton() {
+	const valid = $("confirmation").value === requiredConfirmation();
+	$("confirm-action").disabled = !valid;
+	$("confirmation-status").textContent = valid
+		? "Confirmation accepted."
+		: "Enter the exact confirmation text to continue.";
+}
 function openDialog(kind) {
 	if (kind === "sender") {
 		if (!senderPreview) return;
@@ -348,7 +389,6 @@ function openDialog(kind) {
 			copy: "The selected planner-approved messages will move to Gmail Trash. Nothing is permanently deleted, and the last batch can be restored from gclean.",
 			size: bytes(state.preview.RecoverBytes),
 			count: `${state.preview.DeleteCount.toLocaleString()} selected messages`,
-			confirmation: "MOVE TO TRASH",
 			button: "Move to Trash",
 			className: "danger-soft",
 		},
@@ -358,7 +398,6 @@ function openDialog(kind) {
 			copy: "Only messages whose normalized From address exactly matches the previewed sender will move. This includes starred, important, recent, and otherwise protected mail. The last batch can be restored from gclean.",
 			size: bytes(senderAction?.bytes),
 			count: `${senderAction?.count.toLocaleString()} exact-match messages`,
-			confirmation: "MOVE SENDER MAIL TO TRASH",
 			button: "Move sender mail to Trash",
 			className: "danger-soft",
 		},
@@ -368,8 +407,16 @@ function openDialog(kind) {
 			copy: "This deletes every message currently in Gmail Trash, including items not moved there by gclean. It cannot be undone.",
 			size: "Permanent",
 			count: "All messages in Trash",
-			confirmation: "EMPTY TRASH PERMANENTLY",
 			button: "Empty Trash permanently",
+			className: "danger",
+		},
+		legacyRecovery: {
+			eyebrow: "LOCAL RECOVERY RECORD",
+			title: "Remove the legacy recovery record?",
+			copy: "This removes only the old local undo record. Gmail messages will not change, but that old batch can no longer be restored by gclean.",
+			size: "No Gmail change",
+			count: "Local-only action",
+			button: "Remove recovery record",
 			className: "danger",
 		},
 	}[kind];
@@ -378,20 +425,29 @@ function openDialog(kind) {
 	$("dialog-copy").textContent = content.copy;
 	$("dialog-size").textContent = content.size;
 	$("dialog-count").textContent = content.count;
-	$("confirmation-label").querySelector("b").textContent = content.confirmation;
+	$("confirmation-label").querySelector("b").textContent = requiredConfirmation();
 	$("confirmation").value = "";
 	$("confirm-action").textContent = content.button;
 	$("confirm-action").className = content.className;
+	updateConfirmationButton();
 	$("confirm-dialog").showModal();
 	$("confirmation").focus();
 }
+$("confirmation").addEventListener("input", updateConfirmationButton);
+document
+	.querySelector("#confirm-dialog form")
+	.addEventListener("submit", (event) => event.preventDefault());
+$("close-dialog").addEventListener("click", () => $("confirm-dialog").close());
+$("cancel-dialog").addEventListener("click", () => $("confirm-dialog").close());
 $("confirm-action").addEventListener("click", async (e) => {
 	e.preventDefault();
 	const confirmation = $("confirmation").value;
+	if (confirmation !== requiredConfirmation()) return;
 	const path = {
 		trash: "/api/trash",
 		sender: "/api/sender/trash",
 		purge: "/api/purge",
+		legacyRecovery: "/api/recovery/legacy/remove",
 	}[action];
 	const payload =
 		action === "sender"
@@ -403,9 +459,11 @@ $("confirm-action").addEventListener("click", async (e) => {
 			: { confirmation, previewId: state.previewId };
 	$("confirm-dialog").close();
 	busy(
-		action === "purge" ? "Emptying Gmail Trash…" : "Moving messages to Trash…",
+		action === "purge" ? "Emptying Gmail Trash…" : action === "legacyRecovery" ? "Removing legacy recovery record…" : "Moving messages to Trash…",
 		action === "purge"
 			? "This permanent operation may take several minutes."
+			: action === "legacyRecovery"
+				? "Gmail messages will not change."
 			: "An undo record is being saved first.",
 	);
 	try {

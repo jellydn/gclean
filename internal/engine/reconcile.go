@@ -109,6 +109,13 @@ func (r *Reconciler) Apply(intent Intent) (Outcome, error) {
 func (r *Reconciler) applyTrash(records []storage.StoredMessage) (Outcome, error) {
 	ids := recordIDs(records)
 	if r.CachePath != "" {
+		batch, err := storage.LoadUndoBatch(r.CachePath)
+		if err != nil {
+			return Outcome{}, fmt.Errorf("read undo cache: %w", err)
+		}
+		if err := storage.RefuseNewCleanup(batch, r.Account); err != nil {
+			return Outcome{}, err
+		}
 		if err := storage.SaveUndoCacheForAccount(r.CachePath, r.Account, records); err != nil {
 			return Outcome{}, fmt.Errorf("save undo cache: %w", err)
 		}
