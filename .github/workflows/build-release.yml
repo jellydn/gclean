@@ -10,8 +10,8 @@ permissions:
   contents: read
 
 concurrency:
-  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
-  cancel-in-progress: ${{ !startsWith(github.ref, 'refs/tags/') }}
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || 'release' }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   test:
@@ -40,9 +40,42 @@ jobs:
       - name: Check email literals
         run: ./scripts/lint-email-literals.sh
 
+  version:
+    name: Select release version
+    needs: test
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    outputs:
+      tag: ${{ steps.version.outputs.tag }}
+    steps:
+      - name: Checkout release history
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Select tag
+        id: version
+        shell: bash
+        run: |
+          tag=""
+          if [[ "$GITHUB_REF" == refs/tags/* ]]; then
+            tag=$GITHUB_REF_NAME
+          elif [[ "$GITHUB_REF" == refs/heads/main ]]; then
+            # Reuse this commit's tag on retries; otherwise increment the latest patch.
+            stable='^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$'
+            tag=$(git tag --points-at "$GITHUB_SHA" --sort=-v:refname | { grep -E "$stable" || true; } | sed -n '1p')
+            if [[ -z "$tag" ]]; then
+              latest=$(git tag --sort=-v:refname | { grep -E "$stable" || true; } | sed -n '1p')
+              latest=${latest:-v0.0.0}
+              IFS=. read -r major minor patch <<< "${latest#v}"
+              tag="v${major}.${minor}.$((patch + 1))"
+            fi
+          fi
+          printf 'tag=%s\n' "$tag" >> "$GITHUB_OUTPUT"
+
   package:
     name: Package beta desktop binaries
-    needs: test
+    needs: version
     runs-on: macos-26
     timeout-minutes: 20
     env:
@@ -59,10 +92,12 @@ jobs:
           cache: true
           cache-dependency-path: go.sum
       - name: Set artifact version
+        env:
+          RELEASE_TAG: ${{ needs.version.outputs.tag }}
         shell: bash
         run: |
-          if [[ "$GITHUB_REF" == refs/tags/* ]]; then
-            tag=${GITHUB_REF_NAME}
+          if [[ -n "$RELEASE_TAG" ]]; then
+            tag=$RELEASE_TAG
             semver='^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-[0-9A-Za-z]+([.-][0-9A-Za-z]+)*)?(\+[0-9A-Za-z]+([.-][0-9A-Za-z]+)*)?$'
             if [[ ! "$tag" =~ $semver ]]; then
               echo "Release tags must use SemVer, for example v1.2.3 or v1.2.3-rc.1" >&2
@@ -100,8 +135,8 @@ jobs:
 
   release:
     name: Publish GitHub Release
-    if: startsWith(github.ref, 'refs/tags/')
-    needs: package
+    if: github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/')
+    needs: [version, package]
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     permissions:
@@ -117,14 +152,24 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
+          RELEASE_TAG: ${{ needs.version.outputs.tag }}
         shell: bash
         run: |
-          if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
-            gh release upload "$GITHUB_REF_NAME" dist/* --clobber
+          # Publish in this run: tags created by GITHUB_TOKEN do not trigger workflows.
+          # Create-only reservation: a competing tag must never be overwritten.
+          gh api --method POST "repos/$GH_REPO/git/refs" \
+            -f "ref=refs/tags/$RELEASE_TAG" -f "sha=$GITHUB_SHA" >/dev/null 2>&1 || true
+          remote_commit=$(gh api "repos/$GH_REPO/commits/refs/tags/$RELEASE_TAG" --jq '.sha')
+          if [[ "$remote_commit" != "$GITHUB_SHA" ]]; then
+            echo "Release tag belongs to another commit; refusing to replace its assets." >&2
+            exit 1
+          fi
+          if gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
+            gh release upload "$RELEASE_TAG" dist/* --clobber
           else
-            gh release create "$GITHUB_REF_NAME" dist/* \
+            gh release create "$RELEASE_TAG" dist/* \
               --verify-tag \
               --generate-notes \
               --prerelease \
-              --title "gclean $GITHUB_REF_NAME"
+              --title "gclean $RELEASE_TAG"
           fi

@@ -292,6 +292,75 @@ button:disabled {
 	background: var(--paper);
 	color: var(--green);
 }
+.sender-cleanup {
+	padding: 82px 0 0;
+}
+.sender-cleanup > div:first-child > p:not(.eyebrow) {
+	max-width: 720px;
+	color: var(--muted);
+	font-size: 13px;
+	line-height: 1.6;
+}
+.sender-cleanup form {
+	margin-top: 24px;
+}
+.sender-cleanup form > label {
+	display: block;
+	font-size: 10px;
+	font-weight: 800;
+	letter-spacing: 0.08em;
+	margin-bottom: 8px;
+}
+.sender-input {
+	display: flex;
+	max-width: 720px;
+}
+.sender-input input {
+	min-width: 0;
+	flex: 1;
+	border: 1px solid var(--line);
+	background: var(--paper);
+	padding: 13px 15px;
+	font-size: 13px;
+}
+.sender-input button {
+	flex: none;
+}
+.sender-preview {
+	margin-top: 16px;
+	background: var(--paper);
+	border: 1px solid var(--line);
+	box-shadow: var(--shadow);
+	padding: 22px;
+	display: grid;
+	grid-template-columns: minmax(0, 1.5fr) minmax(140px, 0.5fr) auto;
+	gap: 24px;
+	align-items: center;
+}
+.sender-preview small,
+.sender-preview strong,
+.sender-preview code,
+.sender-preview #sender-preview-size {
+	display: block;
+}
+.sender-preview small {
+	font-size: 9px;
+	font-weight: 800;
+	letter-spacing: 0.12em;
+	color: var(--muted);
+}
+.sender-preview strong {
+	margin-top: 7px;
+	font-size: 17px;
+	overflow-wrap: anywhere;
+}
+.sender-preview code,
+.sender-preview #sender-preview-size {
+	margin-top: 5px;
+	font-size: 10px;
+	color: var(--muted);
+	overflow-wrap: anywhere;
+}
 .review {
 	padding: 82px 0 64px;
 }
@@ -1042,6 +1111,12 @@ dialog h2 {
 	.review-grid {
 		grid-template-columns: 1fr;
 	}
+	.sender-preview {
+		grid-template-columns: 1fr 1fr;
+	}
+	.sender-preview button {
+		grid-column: 1 / -1;
+	}
 	.settings-grid {
 		grid-template-columns: 1fr;
 	}
@@ -1093,6 +1168,16 @@ dialog h2 {
 	}
 	.message {
 		grid-template-columns: 1fr;
+	}
+	.sender-input {
+		align-items: stretch;
+		flex-direction: column;
+	}
+	.sender-preview {
+		grid-template-columns: 1fr;
+	}
+	.sender-preview button {
+		grid-column: 1;
 	}
 	.safety {
 		grid-template-columns: 1fr;

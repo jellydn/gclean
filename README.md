@@ -34,7 +34,9 @@ See [Desktop setup and packaging](docs/desktop.md) for Google Cloud Console,
 security, cross-platform builds, and platform-specific launch notes.
 Pull requests and `main` builds produce short-lived portable workflow
 artifacts, with macOS binaries ad-hoc signed for credential-free beta testing.
-SemVer tags (`v1.2.3`) publish macOS, Linux, and Windows archives plus
+Successful `main` builds automatically publish a new patch-version prerelease;
+explicit SemVer tags (`v1.2.3`) are also supported. Releases include macOS,
+Linux, and Windows archives plus
 `SHA256SUMS` as GitHub prereleases. These beta artifacts are not Apple-notarized
 production releases; see the desktop guide for checksum, Gatekeeper, and
 quarantine instructions. Container images are intentionally not published
@@ -86,6 +88,33 @@ while live-account end-to-end validation is completed.
 
 The seam is `internal/gmailclient.Client` — the fake and real implementations
 can be swapped without changing the engine or storage layers.
+
+## Trash all mail from one sender
+
+`trash-sender` is a direct exact-sender action that does not require a prior
+scan. The first command is a read-only preview. It uses the Gmail query
+`from:"<address>" -in:trash`, includes Spam, follows every result page, and
+then exact-matches each normalized From address locally so Gmail's broader
+`from:` matching cannot expand the cohort.
+
+```bash
+gclean trash-sender notification@github.com
+# Review the exact-match count and size, then copy its --preview-id command.
+gclean trash-sender notification@github.com --preview-id <printed-id> --yes
+gclean undo  # restores the last gclean Trash batch
+```
+
+Input must be one plain email address. Query syntax and display-name forms are
+rejected. `--yes` and the account-bound preview ID are required before
+mutation, and the normal account-bound,
+integrity-checked undo cache is written before Gmail changes. A pending undo
+batch blocks another cleanup. Trash calls use the existing retrying Gmail
+adapter; they do not permanently delete messages.
+
+This direct action intentionally includes starred, important, recent, and
+otherwise planner-protected mail from the exact sender. Use the read-only
+preview carefully before adding `--yes`. The desktop app provides the same
+flow under **Sender cleanup**, with a cohort hash and typed confirmation.
 
 ## Build & test
 
@@ -147,6 +176,8 @@ production use.
 - Dry-run by default
 - Trash, never permanently delete from `clean`
 - `--yes` gate before any state-changing command
+- `trash-sender` validates one exact address, previews first, and exact-matches
+  Gmail results locally before its separate `--yes` action
 - The planner refuses to delete a non-junk message even if a delete rule
   matches — explicit safety-check in `internal/engine/planner.go`
 - Local-only by default; no bodies ever loaded
@@ -157,7 +188,7 @@ production use.
 ## Roadmap → next session
 
 - ~~Reconcile local SQLite and undo-cache state after partial or interrupted real Gmail mutations~~ — done (InTrash reconcile)
-- Live-account end-to-end validation (TC-01…TC-10 in `.planning/live-account-mutation-test-plan.md`)
+- Live-account end-to-end validation (TC-01…TC-11 in `.planning/live-account-mutation-test-plan.md`)
 - People-API enrichment (`IsContact`) on scan
 - Native signed/notarized installer bundles (the portable single binary and
   browser-hosted desktop UI are available now)

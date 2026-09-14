@@ -132,13 +132,29 @@ func (f *FakeClient) SetAccountEmail(account string) {
 func (f *FakeClient) ListMessages(query string, max int) ([]*models.Message, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	return f.listMessagesLocked(query, max, false)
+}
+
+func (f *FakeClient) ListMessagesIncludingSpam(query string, max int) ([]*models.Message, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.listMessagesLocked(query, max, true)
+}
+
+func (f *FakeClient) listMessagesLocked(query string, max int, includeSpamTrash bool) ([]*models.Message, error) {
 	out := make([]*models.Message, 0, len(f.msgs))
 	for _, m := range f.msgs {
-		if f.trashed[m.ID] {
+		trashed := f.trashed[m.ID]
+		spam := false
+		for _, label := range m.Labels {
+			trashed = trashed || strings.EqualFold(label, "TRASH")
+			spam = spam || strings.EqualFold(label, "SPAM")
+		}
+		if (trashed || spam) && !includeSpamTrash {
 			continue
 		}
 		if query != "" {
-			ok, err := matchQuery(m, query)
+			ok, err := matchQuery(m, query, trashed)
 			if err != nil {
 				return nil, err
 			}
@@ -260,13 +276,13 @@ func (f *FakeClient) TrashedIDs() []string {
 // fails loudly instead of silently returning wrong results (the previous
 // implementation ORed tokens and fell back to a subject substring for
 // unknown ones, which could drift from real Gmail behavior).
-func matchQuery(m *models.Message, q string) (bool, error) {
+func matchQuery(m *models.Message, q string, trashed bool) (bool, error) {
 	tokens := strings.Fields(q)
 	if len(tokens) == 0 {
 		return true, nil
 	}
 	for _, t := range tokens {
-		ok, err := matchToken(m, t)
+		ok, err := matchToken(m, t, trashed)
 		if err != nil {
 			return false, err
 		}
@@ -280,7 +296,9 @@ func matchQuery(m *models.Message, q string) (bool, error) {
 // matchToken evaluates one query token.
 //
 // Supported tokens:
-//   - from:<substring>    — case-insensitive substring of the From address
+//   - from:<substring>    — case-insensitive substring of the From address;
+//     an optional quoted value is accepted
+//   - -in:trash           — excludes TRASH-labeled messages and IDs in f.trashed
 //   - subject:<substring> — case-insensitive substring of the subject
 //   - label:<name>        — exact label match
 //   - category:<name>     — Gmail category (promotions, social, ...)
@@ -288,10 +306,13 @@ func matchQuery(m *models.Message, q string) (bool, error) {
 //     (aligned with the engine DSL's has: predicate)
 //
 // Unsupported tokens return an error.
-func matchToken(m *models.Message, t string) (bool, error) {
+func matchToken(m *models.Message, t string, trashed bool) (bool, error) {
 	switch {
 	case strings.HasPrefix(t, "from:"):
-		return strings.Contains(strings.ToLower(m.Sender.Email), strings.ToLower(strings.TrimPrefix(t, "from:"))), nil
+		value := strings.Trim(strings.TrimPrefix(t, "from:"), `"`)
+		return strings.Contains(strings.ToLower(m.Sender.Email), strings.ToLower(value)), nil
+	case t == "-in:trash":
+		return !trashed, nil
 	case strings.HasPrefix(t, "subject:"):
 		return strings.Contains(strings.ToLower(m.Subject), strings.ToLower(strings.TrimPrefix(t, "subject:"))), nil
 	case strings.HasPrefix(t, "label:"):
@@ -319,6 +340,6 @@ func matchToken(m *models.Message, t string) (bool, error) {
 		}
 		return false, nil
 	default:
-		return false, fmt.Errorf("fake: unsupported query token %q (supported: from:, subject:, label:, category:, has:)", t)
+		return false, fmt.Errorf("fake: unsupported query token %q (supported: from:, -in:trash, subject:, label:, category:, has:)", t)
 	}
 }

@@ -237,7 +237,7 @@ func (a *App) Handler() http.Handler {
 	mux.HandleFunc("POST /api/scan", a.api(a.scan))
 	mux.HandleFunc("GET /api/scan/status", a.api(a.getScanStatus))
 	mux.HandleFunc("POST /api/selection", a.api(a.selection))
-	mux.HandleFunc("POST /api/trash", a.api(a.trash))
+	a.registerTrashRoutes(mux)
 	mux.HandleFunc("POST /api/restore", a.api(a.restore))
 	mux.HandleFunc("POST /api/recovery/legacy/remove", a.api(a.removeLegacyRecovery))
 	mux.HandleFunc("POST /api/purge", a.api(a.purge))
