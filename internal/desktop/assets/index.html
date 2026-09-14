@@ -26,14 +26,14 @@
       </header>
 
       <section id="setup" class="setup hidden" aria-live="polite">
-        <div><p class="eyebrow">ONE-TIME SETUP</p><h2>Connect your Gmail account</h2><p>gclean uses a Desktop OAuth client and requests only permission to read metadata and move messages to or from Trash.</p></div>
-        <ol><li>Enable the Gmail API in Google Cloud Console.</li><li>Create an OAuth client with application type <b>Desktop app</b>.</li><li>Choose the downloaded file in <a href="#settings">Settings</a>. Its contents stay local.</li></ol>
+        <div><p class="eyebrow">ONE-TIME SETUP</p><h2>Connect your Gmail account</h2><p>gclean reads Gmail metadata, moves mail to or from Trash, and reads your account storage total. It never reads Drive files or message bodies.</p></div>
+        <ol><li>Enable the Gmail API and Google Drive API in Google Cloud Console.</li><li>Create an OAuth client with application type <b>Desktop app</b>.</li><li>Choose the downloaded file in <a href="#settings">Settings</a>. Its contents stay local.</li></ol>
         <button id="login">Connect with Google <span>↗</span></button>
         <a id="auth-link" class="hidden" target="_blank" rel="noopener">Open Google authorization</a>
       </section>
 
       <section id="overview" class="overview">
-        <div class="metric hero-metric"><small>ESTIMATED STORAGE</small><strong id="total-storage">—</strong><span id="total-messages">No scan yet</span></div>
+        <div class="metric hero-metric"><small id="storage-label">ESTIMATED STORAGE</small><strong id="total-storage">—</strong><span id="total-messages">No scan yet</span><span id="quota-warning" class="hidden"></span></div>
         <div class="metric reclaim"><small>SAFE TO RECLAIM</small><strong id="reclaim">—</strong><span id="delete-count">Preview required</span></div>
         <div class="metric"><small>PROTECTED / KEPT</small><strong id="keep-count">—</strong><span>Contacts, recent & important</span></div>
         <div class="scan-card"><div><small>DISCOVER</small><h2>Refresh Gmail metadata</h2><p>Reads headers, labels, dates, and size estimates. It never downloads message bodies or changes Gmail.</p></div><button id="scan">Scan Gmail <span>→</span></button></div>
@@ -58,6 +58,7 @@
       <section id="safety" class="safety">
         <div><p class="eyebrow">RECOVERY</p><h2>Changed your mind?</h2><p id="undo-copy">No gclean batch is currently waiting in Trash.</p></div>
         <button id="restore" class="secondary" disabled>Restore last batch</button>
+        <button id="open-legacy-recovery" class="text-button hidden" type="button">Remove legacy recovery record…</button>
         <div class="purge-zone"><div><b>Permanent cleanup</b><p>Emptying all Gmail Trash is intentionally disabled by default.</p></div><button id="open-purge" class="text-button" disabled>Empty Trash…</button></div>
       </section>
 
@@ -89,8 +90,8 @@
 
           <section class="settings-card oauth-card" aria-labelledby="oauth-title">
             <div class="card-heading"><div><p class="eyebrow">GOOGLE OAUTH</p><h3 id="oauth-title">Account connection</h3></div><span id="oauth-badge" class="badge">Checking…</span></div>
-            <p class="field-copy">gclean requests Gmail metadata and modify access for scan, Trash, and restore. Credentials and tokens stay on this computer and their contents are never shown here.</p>
-            <ol class="oauth-steps"><li><span>1</span><div><b>Google Cloud project</b><small>Enable the Gmail API and configure the OAuth consent screen.</small></div></li><li><span>2</span><div><b>Desktop app credentials</b><small>Create an OAuth client with application type “Desktop app,” then download its JSON file.</small></div></li><li><span>3</span><div><b>Connect safely</b><small>Choose the file below, then authorize gclean in your browser.</small></div></li></ol>
+            <p class="field-copy">gclean requests Gmail metadata and modify access for scan, Trash, and restore, plus Google storage metadata. Credentials and tokens stay on this computer and their contents are never shown here.</p>
+            <ol class="oauth-steps"><li><span>1</span><div><b>Google Cloud project</b><small>Enable the Gmail API and Google Drive API, then configure the OAuth consent screen.</small></div></li><li><span>2</span><div><b>Desktop app credentials</b><small>Create an OAuth client with application type “Desktop app,” then download its JSON file.</small></div></li><li><span>3</span><div><b>Connect safely</b><small>Choose the file below, then authorize gclean in your browser. Reconnect after enabling Drive to show account storage.</small></div></li></ol>
             <div class="credential-row"><div><b>OAuth credentials</b><small id="credential-copy">No file configured</small></div><label class="file-button">Choose JSON<input id="credentials-file" type="file" accept="application/json,.json"></label></div>
             <div class="oauth-actions"><button id="settings-connect" type="button">Connect / reconnect</button><button id="disconnect" type="button" class="secondary">Disconnect</button></div>
             <p class="requirement"><span>↻</span><span><b>Re-authentication</b> is required after replacing credentials. Disconnect removes only the local token; it does not revoke access in Google Account settings.</span></p>
@@ -113,7 +114,7 @@
     </main>
   </div>
 
-  <dialog id="confirm-dialog"><form method="dialog"><button class="close" value="cancel" aria-label="Close">×</button><p class="eyebrow" id="dialog-eyebrow">CONFIRM CLEANUP</p><h2 id="dialog-title">Move selected mail to Trash?</h2><p id="dialog-copy"></p><div class="confirm-summary"><strong id="dialog-size"></strong><span id="dialog-count"></span></div><label id="confirmation-label">Type <b>MOVE TO TRASH</b> to confirm<input id="confirmation" autocomplete="off"></label><div class="dialog-actions"><button value="cancel" class="secondary">Cancel</button><button id="confirm-action" value="default" class="danger">Move to Trash</button></div></form></dialog>
+  <dialog id="confirm-dialog"><form method="dialog"><button id="close-dialog" type="button" class="close" aria-label="Close">×</button><p class="eyebrow" id="dialog-eyebrow">CONFIRM CLEANUP</p><h2 id="dialog-title">Move selected mail to Trash?</h2><p id="dialog-copy"></p><div class="confirm-summary"><strong id="dialog-size"></strong><span id="dialog-count"></span></div><label id="confirmation-label">Type <b>MOVE TO TRASH</b> to confirm<input id="confirmation" autocomplete="off" aria-describedby="confirmation-status"></label><small id="confirmation-status" aria-live="polite">Enter the exact confirmation text to continue.</small><div class="dialog-actions"><button id="cancel-dialog" type="button" class="secondary">Cancel</button><button id="confirm-action" type="button" class="danger" disabled>Move to Trash</button></div></form></dialog>
   <div id="busy" class="busy hidden" role="status"><span class="spinner"></span><div><b id="busy-title">Working…</b><small id="busy-copy">Keep this window open.</small></div></div>
   <div id="toast" class="toast hidden" role="alert"></div>
   <script src="/assets/app.js" defer></script>

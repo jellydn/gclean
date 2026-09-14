@@ -37,6 +37,9 @@ type Pipeline struct {
 	// This lets interactive clients represent an explicit empty cohort.
 	SelectedSenders  map[string]struct{}
 	SelectionLimited bool
+	// ScanProgress receives local scan phases after Gmail metadata fetches.
+	// It is optional so engine callers remain deterministic in tests and CLI.
+	ScanProgress func(ScanProgress)
 
 	// stage-populated state, read by the CLI to render output.
 	scanned        int
@@ -44,6 +47,20 @@ type Pipeline struct {
 	report         models.DryRunReport
 	trashedIDs     []string
 	trashedRecords []storage.StoredMessage
+}
+
+// ScanProgress describes work after the remote Gmail fetch. It keeps desktop
+// users informed while a large mailbox is classified and written locally.
+type ScanProgress struct {
+	Phase   string
+	Fetched int
+	Total   int
+}
+
+func (p *Pipeline) reportScanProgress(phase string, fetched, total int) {
+	if p.ScanProgress != nil {
+		p.ScanProgress(ScanProgress{Phase: phase, Fetched: fetched, Total: total})
+	}
 }
 
 // MessageReader is the non-mutating Gmail scan seam. Mutation commands use
@@ -101,14 +118,20 @@ func (p *Pipeline) fetchAndClassify(pl *Pipeline) error {
 	if err != nil {
 		return fmt.Errorf("list messages: %w", err)
 	}
+	pl.reportScanProgress("Classifying Gmail metadata", 0, len(msgs))
 	records := make([]storage.StoredMessage, 0, len(msgs))
-	for _, m := range msgs {
+	for index, m := range msgs {
 		c := Classify(m)
 		records = append(records, storage.FromClassified(&c, models.VerdictKeep))
+		if (index+1)%1000 == 0 || index+1 == len(msgs) {
+			pl.reportScanProgress("Classifying Gmail metadata", index+1, len(msgs))
+		}
 	}
+	pl.reportScanProgress("Saving metadata locally", len(msgs), len(msgs))
 	if err := pl.Store.ReplaceAll(records); err != nil {
 		return fmt.Errorf("replace scanned metadata: %w", err)
 	}
+	pl.reportScanProgress("Saved metadata locally", len(msgs), len(msgs))
 	pl.scanned = len(msgs)
 	return nil
 }
@@ -138,11 +161,14 @@ func (p *Pipeline) loadPlan(pl *Pipeline) error {
 		SelectedSenders:  selected,
 		SelectionLimited: pl.SelectionLimited,
 	})
+	updates := make([]storage.VerdictUpdate, 0, len(decisions))
 	for _, d := range decisions {
-		reasons := strings.Join(d.Reasons, ";")
-		if err := pl.Store.SetVerdict(d.Message.ID, int(d.Verdict), reasons, d.Verdict == models.VerdictProtected); err != nil {
-			return fmt.Errorf("set verdict %s: %w", d.Message.ID, err)
-		}
+		updates = append(updates, storage.VerdictUpdate{
+			ID: d.Message.ID, Verdict: int(d.Verdict), Reasons: strings.Join(d.Reasons, ";"), Protected: d.Verdict == models.VerdictProtected,
+		})
+	}
+	if err := pl.Store.SetVerdicts(updates); err != nil {
+		return fmt.Errorf("set planner verdicts (%d updates): %w", len(updates), err)
 	}
 	pl.decisions = decisions
 	pl.report = rep

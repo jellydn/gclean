@@ -256,6 +256,14 @@ button:disabled {
 	font-size: 11px;
 	color: var(--muted);
 }
+#quota-warning {
+	display: block;
+	margin-top: 6px;
+	color: var(--orange);
+}
+#quota-warning.hidden {
+	display: none;
+}
 .reclaim {
 	background: var(--lime);
 }

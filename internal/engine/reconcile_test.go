@@ -4,6 +4,7 @@ import (
 	"errors"
 	"path/filepath"
 	"reflect"
+	"strings"
 	"testing"
 
 	"gclean/internal/storage"
@@ -78,5 +79,30 @@ func TestMutationJournalApplyReportsAndCommitsPartialTrash(t *testing.T) {
 	}
 	if len(cached) != 1 || cached[0].ID != "m1" {
 		t.Fatalf("cache = %+v, want only m1", cached)
+	}
+}
+
+func TestMutationJournalRefuseSecondTrashWhileRecoveryPending(t *testing.T) {
+	store, err := storage.Open(filepath.Join(t.TempDir(), "gclean.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = store.Close() }()
+	first := []storage.StoredMessage{{ID: "m1"}}
+	if err := store.Upsert(first[0]); err != nil {
+		t.Fatal(err)
+	}
+	cachePath := filepath.Join(t.TempDir(), "undo-cache.json")
+	client := &journalClient{trashed: map[string]bool{}, trashIDs: []string{"m1"}}
+	journal := Reconciler{Store: store, CachePath: cachePath, Client: client}
+	if _, err := journal.Apply(Intent{Mutation: MutationTrash, Records: first}); err != nil {
+		t.Fatalf("first trash: %v", err)
+	}
+	second := []storage.StoredMessage{{ID: "m2"}}
+	if _, err := journal.Apply(Intent{Mutation: MutationTrash, Records: second}); err == nil || !strings.Contains(err.Error(), "restore the previous cleanup batch") {
+		t.Fatalf("second trash error = %v, want recovery pending", err)
+	}
+	if len(client.trashed) != 1 || !client.trashed["m1"] {
+		t.Fatalf("second trash changed Gmail: %v", client.trashed)
 	}
 }

@@ -132,11 +132,41 @@ func (s *Store) ReplaceAll(messages []StoredMessage) error {
 	return tx.Commit()
 }
 
-// SetVerdict stamps the planner's verdict for a message.
+// VerdictUpdate is the planner-owned state stored for one message.
+type VerdictUpdate struct {
+	ID        string
+	Verdict   int
+	Reasons   string
+	Protected bool
+}
+
+// SetVerdict stamps the planner's verdict for one message.
 func (s *Store) SetVerdict(id string, verdict int, reasons string, protected bool) error {
-	_, err := s.db.Exec(`UPDATE messages SET verdict=?, verdict_reasons=?, protected=? WHERE id=?`,
-		verdict, reasons, boolInt(protected), id)
-	return err
+	return s.SetVerdicts([]VerdictUpdate{{ID: id, Verdict: verdict, Reasons: reasons, Protected: protected}})
+}
+
+// SetVerdicts writes every planner verdict in one transaction. This avoids an
+// SQLite commit for every message when a large mailbox is re-planned.
+func (s *Store) SetVerdicts(updates []VerdictUpdate) error {
+	if len(updates) == 0 {
+		return nil
+	}
+	tx, err := s.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback() }()
+	stmt, err := tx.Prepare(`UPDATE messages SET verdict=?, verdict_reasons=?, protected=? WHERE id=?`)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = stmt.Close() }()
+	for _, update := range updates {
+		if _, err := stmt.Exec(update.Verdict, update.Reasons, boolInt(update.Protected), update.ID); err != nil {
+			return fmt.Errorf("set verdict %s: %w", update.ID, err)
+		}
+	}
+	return tx.Commit()
 }
 
 // CountAll returns the number of stored messages.

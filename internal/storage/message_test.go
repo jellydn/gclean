@@ -106,3 +106,30 @@ func TestUpsertConflictPreservesPlannerVerdict(t *testing.T) {
 		t.Fatalf("planner stamp = (%d, %q, %d), want protected verdict preserved", verdict, reasons, protected)
 	}
 }
+
+func TestSetVerdictsUpdatesMultipleMessages(t *testing.T) {
+	store, err := Open(t.TempDir() + "/gclean.db")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = store.Close() }()
+	if err := store.ReplaceAll([]StoredMessage{{ID: "m1"}, {ID: "m2"}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SetVerdicts([]VerdictUpdate{
+		{ID: "m1", Verdict: int(models.VerdictDelete), Reasons: "config_delete", Protected: false},
+		{ID: "m2", Verdict: int(models.VerdictProtected), Reasons: "protect:starred", Protected: true},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	var deleted, protected int
+	if err := store.db.QueryRow(`SELECT verdict FROM messages WHERE id="m1"`).Scan(&deleted); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.db.QueryRow(`SELECT protected FROM messages WHERE id="m2"`).Scan(&protected); err != nil {
+		t.Fatal(err)
+	}
+	if deleted != int(models.VerdictDelete) || protected != 1 {
+		t.Fatalf("stored verdicts = delete:%d protected:%d", deleted, protected)
+	}
+}

@@ -34,9 +34,12 @@ import (
 var assets embed.FS
 
 const (
-	trashConfirmation   = "MOVE TO TRASH"
-	restoreConfirmation = "RESTORE"
-	purgeConfirmation   = "EMPTY TRASH PERMANENTLY"
+	trashConfirmation                = "MOVE TO TRASH"
+	restoreConfirmation              = "RESTORE"
+	purgeConfirmation                = "EMPTY TRASH PERMANENTLY"
+	removeLegacyRecoveryConfirmation = "REMOVE LEGACY RECOVERY RECORD"
+	quotaCacheTTL                    = 5 * time.Minute
+	driveSetupWarning                = "Enable Google Drive API, then reconnect Google to show account storage usage."
 )
 
 // Config contains process-owned paths and dependencies. Client is lazy so the
@@ -58,21 +61,25 @@ type Config struct {
 // App owns one desktop session. Mutations are serialized and selected senders
 // live only for the session; the preview signature prevents applying stale UI.
 type App struct {
-	cfg       Config
-	store     *storage.Store
-	token     string
-	clientMu  sync.Mutex
-	client    gmailclient.Client
-	selectMu  sync.RWMutex
-	selected  map[string]struct{}
-	limited   bool
-	operation sync.Mutex
-	authMu    sync.RWMutex
-	auth      authStatus
-	scanMu    sync.RWMutex
-	scanState scanStatus
-	originMu  sync.RWMutex
-	host      string
+	cfg           Config
+	store         *storage.Store
+	token         string
+	clientMu      sync.Mutex
+	client        gmailclient.Client
+	selectMu      sync.RWMutex
+	selected      map[string]struct{}
+	limited       bool
+	operation     sync.Mutex
+	authMu        sync.RWMutex
+	auth          authStatus
+	scanMu        sync.RWMutex
+	scanState     scanStatus
+	originMu      sync.RWMutex
+	host          string
+	quotaMu       sync.Mutex
+	cachedQuota   *models.StorageQuota
+	cachedWarning string
+	quotaFetched  time.Time
 }
 
 type authStatus struct {
@@ -82,7 +89,9 @@ type authStatus struct {
 
 type scanStatus struct {
 	State   string `json:"state"`
+	Phase   string `json:"phase,omitempty"`
 	Fetched int    `json:"fetched"`
+	Total   int    `json:"total,omitempty"`
 	Error   string `json:"error,omitempty"`
 }
 
@@ -103,18 +112,22 @@ type messageRow struct {
 }
 
 type stateResponse struct {
-	Authenticated   bool                `json:"authenticated"`
-	Credentials     bool                `json:"credentialsPresent"`
-	FixtureMode     bool                `json:"fixtureMode"`
-	PurgeAllowed    bool                `json:"purgeAllowed"`
-	Auth            authStatus          `json:"auth"`
-	Stats           models.StatsReport  `json:"stats"`
-	Preview         models.DryRunReport `json:"preview"`
-	PreviewID       string              `json:"previewId"`
-	Senders         []senderRow         `json:"senders"`
-	Messages        []messageRow        `json:"messages"`
-	UndoCount       int                 `json:"undoCount"`
-	RecoveryWarning string              `json:"recoveryWarning,omitempty"`
+	Authenticated   bool                 `json:"authenticated"`
+	Credentials     bool                 `json:"credentialsPresent"`
+	FixtureMode     bool                 `json:"fixtureMode"`
+	PurgeAllowed    bool                 `json:"purgeAllowed"`
+	Auth            authStatus           `json:"auth"`
+	Stats           models.StatsReport   `json:"stats"`
+	StorageQuota    *models.StorageQuota `json:"storageQuota,omitempty"`
+	QuotaWarning    string               `json:"quotaWarning,omitempty"`
+	Preview         models.DryRunReport  `json:"preview"`
+	PreviewID       string               `json:"previewId"`
+	Senders         []senderRow          `json:"senders"`
+	Messages        []messageRow         `json:"messages"`
+	UndoCount       int                  `json:"undoCount"`
+	RecoveryPending bool                 `json:"recoveryPending"`
+	LegacyRecovery  bool                 `json:"legacyRecovery"`
+	RecoveryWarning string               `json:"recoveryWarning,omitempty"`
 }
 
 type actionRequest struct {
@@ -226,6 +239,7 @@ func (a *App) Handler() http.Handler {
 	mux.HandleFunc("POST /api/selection", a.api(a.selection))
 	mux.HandleFunc("POST /api/trash", a.api(a.trash))
 	mux.HandleFunc("POST /api/restore", a.api(a.restore))
+	mux.HandleFunc("POST /api/recovery/legacy/remove", a.api(a.removeLegacyRecovery))
 	mux.HandleFunc("POST /api/purge", a.api(a.purge))
 	mux.HandleFunc("POST /api/login", a.api(a.login))
 	return a.validateHost(securityHeaders(mux))
@@ -376,6 +390,20 @@ func (a *App) updateScanProgress(fetched int) {
 	a.scanMu.Lock()
 	if a.scanState.State == "scanning" && fetched > a.scanState.Fetched {
 		a.scanState.Fetched = fetched
+	}
+	a.scanMu.Unlock()
+}
+
+func (a *App) updateScanPhase(progress engine.ScanProgress) {
+	a.scanMu.Lock()
+	if a.scanState.State == "scanning" {
+		if progress.Phase != a.scanState.Phase {
+			a.scanState.Phase = progress.Phase
+			a.scanState.Fetched = progress.Fetched
+		} else if progress.Fetched > a.scanState.Fetched {
+			a.scanState.Fetched = progress.Fetched
+		}
+		a.scanState.Total = progress.Total
 	}
 	a.scanMu.Unlock()
 }
@@ -577,6 +605,11 @@ func (a *App) clearClient() {
 	a.clientMu.Lock()
 	a.client = nil
 	a.clientMu.Unlock()
+	a.quotaMu.Lock()
+	a.cachedQuota = nil
+	a.cachedWarning = ""
+	a.quotaFetched = time.Time{}
+	a.quotaMu.Unlock()
 }
 
 func (a *App) authInProgress() bool {
@@ -585,16 +618,49 @@ func (a *App) authInProgress() bool {
 	return a.auth.State == "starting" || a.auth.State == "waiting"
 }
 
+func (a *App) storageQuotaState(client gmailclient.Client) (*models.StorageQuota, string) {
+	a.quotaMu.Lock()
+	if !a.quotaFetched.IsZero() && time.Since(a.quotaFetched) < quotaCacheTTL {
+		quota, warning := a.cachedQuota, a.cachedWarning
+		a.quotaMu.Unlock()
+		return quota, warning
+	}
+	a.quotaMu.Unlock()
+
+	fetched, err := client.StorageQuota()
+	quota, warning := quotaView(fetched, err, a.cfg.FixturePath != "")
+	a.quotaMu.Lock()
+	a.cachedQuota = quota
+	a.cachedWarning = warning
+	a.quotaFetched = time.Now()
+	a.quotaMu.Unlock()
+	return quota, warning
+}
+
+func quotaView(quota models.StorageQuota, err error, fixture bool) (*models.StorageQuota, string) {
+	if err == nil {
+		q := quota
+		return &q, ""
+	}
+	if fixture || !gmailclient.IsStorageQuotaSetupError(err) {
+		return nil, ""
+	}
+	return nil, driveSetupWarning
+}
+
 func (a *App) buildState() (stateResponse, error) {
 	_, tokenErr := gmailclient.LoadToken()
 	authenticated := tokenErr == nil || a.cfg.FixturePath != ""
 	account := ""
+	var storageQuota *models.StorageQuota
+	quotaWarning := ""
 	if authenticated {
-		_, resolvedAccount, err := a.getClientAndAccount()
+		client, resolvedAccount, err := a.getClientAndAccount()
 		if err != nil {
 			return stateResponse{}, err
 		}
 		account = resolvedAccount
+		storageQuota, quotaWarning = a.storageQuotaState(client)
 	}
 	lock, err := storage.AcquireMutationLock(a.cfg.CachePath)
 	if err != nil {
@@ -614,9 +680,11 @@ func (a *App) buildState() (stateResponse, error) {
 		return stateResponse{}, fmt.Errorf("read undo cache: %w", err)
 	}
 	undoCount := len(batch.Records)
+	legacyRecovery := false
 	recoveryWarning := ""
 	if err := storage.ValidateUndoBatchAccount(batch, account); err != nil {
 		undoCount = 0
+		legacyRecovery = len(batch.Records) > 0 && batch.Account == ""
 		recoveryWarning = err.Error()
 	}
 	a.authMu.RLock()
@@ -635,11 +703,15 @@ func (a *App) buildState() (stateResponse, error) {
 		PurgeAllowed:    a.cfg.AllowPurge && (a.cfg.FixturePath != "" || gmailclient.PurgeAuthorized()),
 		Auth:            auth,
 		Stats:           agg.Report,
+		StorageQuota:    storageQuota,
+		QuotaWarning:    quotaWarning,
 		Preview:         p.Report(),
 		PreviewID:       previewID(p.Decisions()),
 		Senders:         rows,
 		Messages:        messages,
 		UndoCount:       undoCount,
+		RecoveryPending: len(batch.Records) > 0,
+		LegacyRecovery:  legacyRecovery,
 		RecoveryWarning: recoveryWarning,
 	}, nil
 }
@@ -765,7 +837,10 @@ func (a *App) scan(w http.ResponseWriter, r *http.Request) error {
 		a.setScanStatus(scanStatus{State: "error", Error: err.Error()})
 		return err
 	}
-	p := &engine.Pipeline{Store: a.store, Reader: client, Keep: compiled.Keep, Rules: compiled.Rules, Account: account, CachePath: a.cfg.CachePath}
+	p := &engine.Pipeline{
+		Store: a.store, Reader: client, Keep: compiled.Keep, Rules: compiled.Rules, Account: account, CachePath: a.cfg.CachePath,
+		ScanProgress: a.updateScanPhase,
+	}
 	if err := p.Run(p.ScanStages()...); err != nil {
 		a.setScanStatus(scanStatus{State: "error", Error: err.Error()})
 		return err
@@ -816,6 +891,13 @@ func (a *App) trash(w http.ResponseWriter, r *http.Request) error {
 	if err != nil {
 		return err
 	}
+	batch, err := storage.LoadUndoBatch(a.cfg.CachePath)
+	if err != nil {
+		return fmt.Errorf("read undo cache: %w", err)
+	}
+	if err := storage.RefuseNewCleanup(batch, account); err != nil {
+		return &statusError{http.StatusConflict, err.Error()}
+	}
 	p, err := a.plan(account)
 	if err != nil {
 		return err
@@ -860,6 +942,36 @@ func (a *App) restore(w http.ResponseWriter, r *http.Request) error {
 		return err
 	}
 	return writeJSON(w, http.StatusOK, actionResponse{Message: fmt.Sprintf("Restored %d messages from Trash.", len(outcome.Moved)), Count: len(outcome.Moved)})
+}
+
+func (a *App) removeLegacyRecovery(w http.ResponseWriter, r *http.Request) error {
+	var req actionRequest
+	if err := decodeJSON(r, &req); err != nil {
+		return err
+	}
+	if req.Confirmation != removeLegacyRecoveryConfirmation {
+		return &statusError{http.StatusBadRequest, "type REMOVE LEGACY RECOVERY RECORD to confirm"}
+	}
+	if !a.operation.TryLock() {
+		return &statusError{http.StatusConflict, "another operation is already running"}
+	}
+	defer a.operation.Unlock()
+	lock, err := storage.AcquireMutationLock(a.cfg.CachePath)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = lock.Unlock() }()
+	batch, err := storage.LoadUndoBatch(a.cfg.CachePath)
+	if err != nil {
+		return fmt.Errorf("read undo cache: %w", err)
+	}
+	if len(batch.Records) == 0 || batch.Account != "" {
+		return &statusError{http.StatusConflict, "only a legacy recovery record without an account binding can be removed here"}
+	}
+	if err := storage.ReplaceOrRemoveUndoCache(a.cfg.CachePath, nil); err != nil {
+		return fmt.Errorf("remove legacy recovery record: %w", err)
+	}
+	return writeJSON(w, http.StatusOK, actionResponse{Message: "Removed the legacy local recovery record. Gmail messages were not changed."})
 }
 
 func (a *App) purge(w http.ResponseWriter, r *http.Request) error {

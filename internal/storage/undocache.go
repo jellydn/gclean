@@ -184,3 +184,16 @@ func ValidateUndoBatchAccount(batch UndoBatch, account string) error {
 	}
 	return nil
 }
+
+// RefuseNewCleanup reports why a second trash batch cannot start while a
+// recovery record is still pending. CLI clean and desktop trash share this
+// rule so both keep one recoverable batch at a time.
+func RefuseNewCleanup(batch UndoBatch, account string) error {
+	if len(batch.Records) == 0 {
+		return nil
+	}
+	if err := ValidateUndoBatchAccount(batch, account); err != nil {
+		return fmt.Errorf("cannot start a new cleanup while the existing recovery record is unavailable: %w", err)
+	}
+	return errors.New("restore the previous cleanup batch before starting another cleanup; gclean keeps one recovery batch at a time")
+}
