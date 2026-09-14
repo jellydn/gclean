@@ -72,6 +72,10 @@ This direct action does not apply planner protections. Starred, important,
 recent, and otherwise protected messages from the exact sender are included in
 the preview and Trash cohort. This difference is stated before confirmation.
 
+The CLI equivalent is `gclean trash-sender`. A checked-in sender list and
+wrapper for repeating GitHub and other machine-notification cleanups live in
+[Repeatable notification cleanup](notification-cleanup.md).
+
 ### Configuration and startup controls
 
 | Setting | Default | Desktop behavior |
