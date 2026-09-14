@@ -18,12 +18,14 @@ go build -o gclean ./cmd/gclean
 `gclean` keeps one recovery batch at a time. A pending
 `~/.config/gclean/undo-cache.json` blocks the next `--yes`. If that file is a
 leftover fixture (IDs like `m01`) or you already rely on Gmail Trash for the
-previous batch, move it aside:
+previous batch, move it aside using a unique backup name:
 
 ```bash
-mv ~/.config/gclean/undo-cache.json \
-   ~/.config/gclean/undo-cache.json.bak-$(date +%Y%m%dT%H%M%S)
+backup=$(mktemp ~/.config/gclean/undo-cache.json.bak-XXXXXXXX)
+mv ~/.config/gclean/undo-cache.json "$backup"
 ```
+
+Do not run another mutating `gclean` command while moving the cache.
 
 ## One sender (GitHub notifications)
 
@@ -67,19 +69,24 @@ Trash one address from the list (or any other plain address):
 ./scripts/trash-notification-senders.sh --yes notifications@github.com
 ```
 
-`--yes` with more than one sender rotates a pending undo cache out of the way
-before each apply so the next sender is not blocked. Each rotated file is kept
-next to the live cache. `gclean undo` then restores **only the last sender**.
-Use Gmail Trash to recover earlier senders from the same run.
+`--yes` allows only one instance of the wrapper per undo-cache path. Do not
+run another mutating `gclean` or desktop operation at the same time.
+
+With more than one sender, the wrapper rotates a pending undo cache out of the
+way before each apply so the next sender is not blocked. Each rotated file has
+a unique name and is kept next to the live cache. `gclean undo` then restores
+**only the last sender**. Use Gmail Trash to recover earlier senders from the
+same run.
 
 ## What this list does not trash
 
 Keep these out of `scripts/notification-senders.txt` unless you add them on
 purpose:
 
-- Bank and card alerts (DBS, UOB, Trust, Rakuten Card, …)
+- Bank, card, investment, and cryptocurrency alerts
 - Google account and Apple transactional mail
 - Stripe, including account-closure / action-required mail
+- Recruiting and scheduling services such as Greenhouse and Calendly
 - Language-course and retail newsletters (EnglishClass101, TLDR, Uniqlo, …)
 - Receipts and order confirmations (Grab, Foodpanda, …)
 
