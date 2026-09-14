@@ -1,0 +1,47 @@
+# Machine-notification senders for scripts/trash-notification-senders.sh
+# One plain address per line. Lines starting with # are ignored.
+#
+# Intentionally omitted: banks, Google/Apple accounts, Stripe,
+# receipts, and marketing newsletters. See docs/notification-cleanup.md.
+
+notifications@github.com
+noreply@githubstatus.com
+noreply@github.com
+jobalerts-noreply@linkedin.com
+messages-noreply@linkedin.com
+notifications-noreply@linkedin.com
+messaging-digest-noreply@linkedin.com
+jobs-noreply@linkedin.com
+notification@facebookmail.com
+friendupdates@facebookmail.com
+close_friend_updates@facebookmail.com
+notification+kjdkm-p3j7-_@facebookmail.com
+no-reply@mail.instagram.com
+notification@priority.instagram.com
+noreply@youtube.com
+no-reply@youtube.com
+no-reply@asana.com
+do-not-reply@trello.com
+noreply@md.getsentry.com
+support-noreply@snyk.io
+notifications@vercel.com
+notifications-noreply@bitbucket.org
+bot@notifications.heroku.com
+bot@heroku.com
+alerts@cronitor.io
+alerts@logentries.com
+no-reply-env0@env0.com
+notifications@cursor1.discoursemail.com
+notifications@openai1.discoursemail.com
+update@grafana.com
+no-reply@laravel.com
+notifications@latitude.sh
+notifications@calendly.com
+no-reply@todoist.com
+noreply@codetriage.com
+no-reply@email.slackhq.com
+no-reply@us.greenhouse-mail.io
+notifications@coinhako.com
+notifications@artstation.com
+info@notifications.static.app
+engineering@notifications.polar.sh
