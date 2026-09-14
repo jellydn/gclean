@@ -208,7 +208,10 @@ short-lived repository `GITHUB_TOKEN`; no release secrets are required. A
 rerun for an existing tag replaces that tag's assets with the freshly verified
 outputs. Actions are pinned to immutable revisions, permissions default to
 read-only, and only the release job receives `contents: write`. A tag that
-belongs to another commit is rejected before any assets are replaced.
+belongs to another commit is rejected before any assets are replaced. The
+publisher first reserves the tag with a create-only API call, then checks its
+remote commit. Release tags must not be force-moved by other repository writers;
+repository tag rules can enforce that policy outside this workflow.
 
 The macOS beta binaries are ad-hoc signed; Windows and Linux beta binaries are
 unsigned. No Developer ID or notarization credentials are configured in the

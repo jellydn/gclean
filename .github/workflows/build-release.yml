@@ -142,11 +142,6 @@ jobs:
     permissions:
       contents: write
     steps:
-      - name: Checkout release tags
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
-        with:
-          fetch-depth: 0
-          persist-credentials: false
       - name: Download packaged binaries
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
         with:
@@ -161,17 +156,19 @@ jobs:
         shell: bash
         run: |
           # Publish in this run: tags created by GITHUB_TOKEN do not trigger workflows.
-          if git rev-parse --verify "refs/tags/$RELEASE_TAG" >/dev/null 2>&1; then
-            if [[ $(git rev-parse "refs/tags/$RELEASE_TAG^{commit}") != "$GITHUB_SHA" ]]; then
-              echo "Release tag belongs to another commit; refusing to replace its assets." >&2
-              exit 1
-            fi
+          # Create-only reservation: a competing tag must never be overwritten.
+          gh api --method POST "repos/$GH_REPO/git/refs" \
+            -f "ref=refs/tags/$RELEASE_TAG" -f "sha=$GITHUB_SHA" >/dev/null 2>&1 || true
+          remote_commit=$(gh api "repos/$GH_REPO/commits/refs/tags/$RELEASE_TAG" --jq '.sha')
+          if [[ "$remote_commit" != "$GITHUB_SHA" ]]; then
+            echo "Release tag belongs to another commit; refusing to replace its assets." >&2
+            exit 1
           fi
           if gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
             gh release upload "$RELEASE_TAG" dist/* --clobber
           else
             gh release create "$RELEASE_TAG" dist/* \
-              --target "$GITHUB_SHA" \
+              --verify-tag \
               --generate-notes \
               --prerelease \
               --title "gclean $RELEASE_TAG"

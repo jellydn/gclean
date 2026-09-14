@@ -118,7 +118,8 @@ func TestFakeClient_ListAndTrash(t *testing.T) {
 func TestFakeClient_ListMessagesIncludingSpamHonorsTrash(t *testing.T) {
 	msgs := []*models.Message{
 		{ID: "live", Subject: "live", Date: time.Now(), Labels: []string{"INBOX"}},
-		{ID: "labeled", Subject: "labeled", Date: time.Now(), Labels: []string{"TRASH"}},
+		{ID: "labeled", Subject: "labeled", Date: time.Now(), Labels: []string{"TrAsH"}},
+		{ID: "spam", Subject: "spam", Date: time.Now(), Labels: []string{"SPAM"}},
 	}
 	c := NewFakeClientFromMessages(msgs)
 	if err := c.TrashMessages([]string{"live"}); err != nil {
@@ -129,23 +130,23 @@ func TestFakeClient_ListMessagesIncludingSpamHonorsTrash(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(got) != 1 || got[0].ID != "labeled" {
-		t.Fatalf("ListMessages = %#v, want labeled only", got)
+	if len(got) != 0 {
+		t.Fatalf("ListMessages = %#v, want no Spam or Trash", got)
 	}
 
 	got, err = c.ListMessagesIncludingSpam("", 0)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(got) != 2 {
-		t.Fatalf("IncludingSpam without -in:trash = %#v, want both", got)
+	if len(got) != 3 {
+		t.Fatalf("IncludingSpam without -in:trash = %#v, want all three", got)
 	}
 
 	got, err = c.ListMessagesIncludingSpam("-in:trash", 0)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(got) != 0 {
-		t.Fatalf("IncludingSpam -in:trash = %#v, want none", got)
+	if len(got) != 1 || got[0].ID != "spam" {
+		t.Fatalf("IncludingSpam -in:trash = %#v, want only Spam", got)
 	}
 }

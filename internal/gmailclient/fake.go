@@ -141,11 +141,16 @@ func (f *FakeClient) ListMessagesIncludingSpam(query string, max int) ([]*models
 	return f.listMessagesLocked(query, max, true)
 }
 
-func (f *FakeClient) listMessagesLocked(query string, max int, includeTrash bool) ([]*models.Message, error) {
+func (f *FakeClient) listMessagesLocked(query string, max int, includeSpamTrash bool) ([]*models.Message, error) {
 	out := make([]*models.Message, 0, len(f.msgs))
 	for _, m := range f.msgs {
 		trashed := f.trashed[m.ID]
-		if trashed && !includeTrash {
+		spam := false
+		for _, label := range m.Labels {
+			trashed = trashed || strings.EqualFold(label, "TRASH")
+			spam = spam || strings.EqualFold(label, "SPAM")
+		}
+		if (trashed || spam) && !includeSpamTrash {
 			continue
 		}
 		if query != "" {
@@ -307,15 +312,7 @@ func matchToken(m *models.Message, t string, trashed bool) (bool, error) {
 		value := strings.Trim(strings.TrimPrefix(t, "from:"), `"`)
 		return strings.Contains(strings.ToLower(m.Sender.Email), strings.ToLower(value)), nil
 	case t == "-in:trash":
-		if trashed {
-			return false, nil
-		}
-		for _, label := range m.Labels {
-			if strings.EqualFold(label, "TRASH") {
-				return false, nil
-			}
-		}
-		return true, nil
+		return !trashed, nil
 	case strings.HasPrefix(t, "subject:"):
 		return strings.Contains(strings.ToLower(m.Subject), strings.ToLower(strings.TrimPrefix(t, "subject:"))), nil
 	case strings.HasPrefix(t, "label:"):
