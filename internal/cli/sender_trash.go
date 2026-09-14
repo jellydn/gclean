@@ -3,6 +3,7 @@ package cli
 import (
 	"fmt"
 	"io"
+	"strings"
 
 	"github.com/spf13/cobra"
 
@@ -63,12 +64,13 @@ func newTrashSenderCmd(out, errOut io.Writer) *cobra.Command {
 				_, _ = fmt.Fprintln(out, "Nothing changed.")
 				return nil
 			}
+			quoted := shellQuote(preview.Sender)
 			if !yes {
-				_, _ = fmt.Fprintf(out, "Nothing changed. Review this count, then run `gclean trash-sender %s --preview-id %s --yes` to move only this reviewed cohort to Trash.\n", preview.Sender, preview.ID)
+				_, _ = fmt.Fprintf(out, "Nothing changed. Review this count, then run `gclean trash-sender %s --preview-id %s --yes` to move only this reviewed cohort to Trash.\n", quoted, preview.ID)
 				return nil
 			}
 			if previewID == "" || previewID != preview.ID {
-				return fmt.Errorf("sender preview changed or was not supplied; run `gclean trash-sender %s` again and use its --preview-id", preview.Sender)
+				return fmt.Errorf("sender preview changed or was not supplied; run `gclean trash-sender %s` again and use its --preview-id", quoted)
 			}
 			journal := &engine.Reconciler{
 				Store:            store,
@@ -89,4 +91,10 @@ func newTrashSenderCmd(out, errOut io.Writer) *cobra.Command {
 	cmd.Flags().StringVar(&previewID, "preview-id", "", "Exact cohort ID printed by the read-only preview")
 	cmd.Flags().StringVar(&fixtures, "fixtures", "", "Path to a JSON fixtures file (dev/test mode)")
 	return cmd
+}
+
+// shellQuote wraps s in POSIX single quotes so copy-pasted commands keep a
+// validated local-part character such as & or $ as one argument.
+func shellQuote(s string) string {
+	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
 }

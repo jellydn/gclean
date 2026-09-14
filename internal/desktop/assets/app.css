@@ -340,7 +340,7 @@ button:disabled {
 .sender-preview small,
 .sender-preview strong,
 .sender-preview code,
-.sender-preview span {
+.sender-preview #sender-preview-size {
 	display: block;
 }
 .sender-preview small {
@@ -355,7 +355,7 @@ button:disabled {
 	overflow-wrap: anywhere;
 }
 .sender-preview code,
-.sender-preview span {
+.sender-preview #sender-preview-size {
 	margin-top: 5px;
 	font-size: 10px;
 	color: var(--muted);

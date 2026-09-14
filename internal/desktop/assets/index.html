@@ -44,7 +44,7 @@
         <div><p class="eyebrow">EXACT SENDER</p><h2>Move all mail from one sender to Trash</h2><p>Enter one complete sender address. gclean uses Gmail search, then checks every returned From address for an exact match before it builds the preview. This direct tool includes starred, important, recent, and otherwise protected mail from that sender.</p></div>
         <form id="sender-form">
           <label for="sender-address">Sender address</label>
-          <div class="sender-input"><input id="sender-address" type="email" autocomplete="off" spellcheck="false" placeholder="notification@github.com" required><button id="preview-sender" type="submit">Preview mail</button></div>
+          <div class="sender-input"><input id="sender-address" type="email" autocomplete="off" spellcheck="false" placeholder="notification@github.com" required><button id="preview-sender" type="submit" disabled>Preview mail</button></div>
         </form>
         <div id="sender-preview" class="sender-preview hidden" aria-live="polite">
           <div><small>EXACT MATCH</small><strong id="sender-preview-address"></strong><code id="sender-preview-query"></code></div>

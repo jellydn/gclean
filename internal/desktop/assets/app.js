@@ -164,7 +164,7 @@ function render() {
 		? "Restore the previous cleanup batch before starting another cleanup"
 		: "";
 	$("preview-sender").disabled = !connected;
-	$("open-sender-trash").disabled = !senderPreview?.count || state.recoveryPending;
+	$("open-sender-trash").disabled = senderTrashLocked(connected);
 	$("undo-copy").textContent = state.recoveryWarning
 		? `Recovery is paused: ${state.recoveryWarning}`
 		: state.undoCount
@@ -321,7 +321,7 @@ async function pollAuth() {
 }
 $("sender-form").addEventListener("submit", async (event) => {
 	event.preventDefault();
-	if (!event.currentTarget.reportValidity()) return;
+	if (!state?.authenticated || !event.currentTarget.reportValidity()) return;
 	const request = ++senderPreviewRequest;
 	busy(
 		"Finding exact sender mail…",
@@ -350,15 +350,18 @@ $("sender-address").addEventListener("input", () => {
 	idle();
 });
 $("open-sender-trash").addEventListener("click", () => openDialog("sender"));
+function senderTrashLocked(connected = state?.authenticated) {
+	return !connected || !senderPreview?.count || !!state?.recoveryPending;
+}
 function renderSenderPreview() {
 	$("sender-preview").classList.toggle("hidden", !senderPreview);
+	$("open-sender-trash").disabled = senderTrashLocked();
 	if (!senderPreview) return;
 	$("sender-preview-address").textContent = senderPreview.sender;
 	$("sender-preview-query").textContent = senderPreview.query;
 	$("sender-preview-count").textContent = senderPreview.count.toLocaleString();
 	$("sender-preview-size").textContent =
 		`${bytes(senderPreview.bytes)} estimated`;
-	$("open-sender-trash").disabled = !senderPreview.count || state.recoveryPending;
 }
 $("open-trash").addEventListener("click", () => openDialog("trash"));
 $("open-purge").addEventListener("click", () => openDialog("purge"));

@@ -108,6 +108,43 @@ func TestTrashSenderPreviewsThenRequiresYes(t *testing.T) {
 	}
 }
 
+func TestTrashSenderQuotesShellSpecialAddress(t *testing.T) {
+	tmp := t.TempDir()
+	t.Setenv("GCLEAN_DB_PATH", filepath.Join(tmp, "gclean.db"))
+	t.Setenv("GCLEAN_UNDO_CACHE", filepath.Join(tmp, "undo.json"))
+	wanted := defang.MkEmail("foo&bar", "example.com")
+	messages := []*models.Message{
+		{ID: "wanted", Sender: models.Sender{Email: wanted}, Subject: "Wanted", Date: time.Now(), Size: 1024},
+	}
+	data, err := json.Marshal(messages)
+	if err != nil {
+		t.Fatal(err)
+	}
+	fixturePath := filepath.Join(tmp, "messages.json")
+	if err := os.WriteFile(fixturePath, data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	var output bytes.Buffer
+	cmd := Build(&output, &output)
+	cmd.SetArgs([]string{"trash-sender", wanted, "--fixtures", fixturePath})
+	if err := cmd.Execute(); err != nil {
+		t.Fatal(err)
+	}
+	quoted := "'" + wanted + "'"
+	if !strings.Contains(output.String(), "gclean trash-sender "+quoted+" --preview-id") {
+		t.Fatalf("preview did not quote sender: %q", output.String())
+	}
+
+	output.Reset()
+	cmd = Build(&output, &output)
+	cmd.SetArgs([]string{"trash-sender", wanted, "--yes", "--fixtures", fixturePath})
+	err = cmd.Execute()
+	if err == nil || !strings.Contains(err.Error(), "gclean trash-sender "+quoted) {
+		t.Fatalf("apply error did not quote sender: %v", err)
+	}
+}
+
 func TestTrashSenderRejectsQueryInputBeforeClientResolution(t *testing.T) {
 	var output bytes.Buffer
 	cmd := Build(&output, &output)
