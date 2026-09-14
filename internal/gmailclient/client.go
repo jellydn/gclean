@@ -19,6 +19,10 @@ type Client interface {
 	// ListMessages returns messages matching `query` (same syntax as the
 	// Gmail web search bar) up to `max`. max==0 means "all".
 	ListMessages(query string, max int) ([]*models.Message, error)
+	// ListMessagesIncludingSpam is the same paginated metadata read with
+	// Gmail's includeSpamTrash option enabled. Callers must exclude Trash in
+	// the query when already-trashed messages are not wanted.
+	ListMessagesIncludingSpam(query string, max int) ([]*models.Message, error)
 
 	// TrashMessages moves the given message IDs to Gmail's Trash.
 	// Trash is recoverable for 30 days server-side. This is intentionally

@@ -134,6 +134,10 @@ func (f *FakeClient) ListMessages(query string, max int) ([]*models.Message, err
 	return out, nil
 }
 
+func (f *FakeClient) ListMessagesIncludingSpam(query string, max int) ([]*models.Message, error) {
+	return f.ListMessages(query, max)
+}
+
 func (f *FakeClient) TrashMessages(ids []string) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -260,7 +264,9 @@ func matchQuery(m *models.Message, q string) (bool, error) {
 // matchToken evaluates one query token.
 //
 // Supported tokens:
-//   - from:<substring>    — case-insensitive substring of the From address
+//   - from:<substring>    — case-insensitive substring of the From address;
+//     an optional quoted value is accepted
+//   - -in:trash           — excludes messages carrying the TRASH label
 //   - subject:<substring> — case-insensitive substring of the subject
 //   - label:<name>        — exact label match
 //   - category:<name>     — Gmail category (promotions, social, ...)
@@ -271,7 +277,15 @@ func matchQuery(m *models.Message, q string) (bool, error) {
 func matchToken(m *models.Message, t string) (bool, error) {
 	switch {
 	case strings.HasPrefix(t, "from:"):
-		return strings.Contains(strings.ToLower(m.Sender.Email), strings.ToLower(strings.TrimPrefix(t, "from:"))), nil
+		value := strings.Trim(strings.TrimPrefix(t, "from:"), `"`)
+		return strings.Contains(strings.ToLower(m.Sender.Email), strings.ToLower(value)), nil
+	case t == "-in:trash":
+		for _, label := range m.Labels {
+			if strings.EqualFold(label, "TRASH") {
+				return false, nil
+			}
+		}
+		return true, nil
 	case strings.HasPrefix(t, "subject:"):
 		return strings.Contains(strings.ToLower(m.Subject), strings.ToLower(strings.TrimPrefix(t, "subject:"))), nil
 	case strings.HasPrefix(t, "label:"):
@@ -299,6 +313,6 @@ func matchToken(m *models.Message, t string) (bool, error) {
 		}
 		return false, nil
 	default:
-		return false, fmt.Errorf("fake: unsupported query token %q (supported: from:, subject:, label:, category:, has:)", t)
+		return false, fmt.Errorf("fake: unsupported query token %q (supported: from:, -in:trash, subject:, label:, category:, has:)", t)
 	}
 }

@@ -53,6 +53,25 @@ Gmail. Replacing OAuth credentials disconnects the old local session and
 requires re-authentication. Permanent deletion is not a persisted checkbox;
 it remains behind the separate authorization and startup gates below.
 
+## Exact sender cleanup
+
+The **Sender cleanup** section can move all current mail from one sender to
+Trash without a prior metadata scan. It accepts one plain email address, shows
+the exact-match count and estimated size, and requires typing
+`MOVE SENDER MAIL TO TRASH` before mutation. The apply request repeats the
+Gmail search and rejects a changed cohort hash, so it cannot apply a stale
+preview.
+
+The backend includes Spam, excludes existing Trash, follows all Gmail result
+pages, and exact-matches normalized From addresses after Gmail evaluates its
+quoted `from:` query. The Mutation Journal then writes the normal account-bound
+undo batch before it uses the existing retrying Trash adapter. The last batch
+can be restored from the Safety section or with `gclean undo`.
+
+This direct action does not apply planner protections. Starred, important,
+recent, and otherwise protected messages from the exact sender are included in
+the preview and Trash cohort. This difference is stated before confirmation.
+
 ### Configuration and startup controls
 
 | Setting | Default | Desktop behavior |

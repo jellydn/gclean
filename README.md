@@ -87,6 +87,33 @@ while live-account end-to-end validation is completed.
 The seam is `internal/gmailclient.Client` — the fake and real implementations
 can be swapped without changing the engine or storage layers.
 
+## Trash all mail from one sender
+
+`trash-sender` is a direct exact-sender action that does not require a prior
+scan. The first command is a read-only preview. It uses the Gmail query
+`from:"<address>" -in:trash`, includes Spam, follows every result page, and
+then exact-matches each normalized From address locally so Gmail's broader
+`from:` matching cannot expand the cohort.
+
+```bash
+gclean trash-sender notification@github.com
+# Review the exact-match count and size, then copy its --preview-id command.
+gclean trash-sender notification@github.com --preview-id <printed-id> --yes
+gclean undo  # restores the last gclean Trash batch
+```
+
+Input must be one plain email address. Query syntax and display-name forms are
+rejected. `--yes` and the account-bound preview ID are required before
+mutation, and the normal account-bound,
+integrity-checked undo cache is written before Gmail changes. A pending undo
+batch blocks another cleanup. Trash calls use the existing retrying Gmail
+adapter; they do not permanently delete messages.
+
+This direct action intentionally includes starred, important, recent, and
+otherwise planner-protected mail from the exact sender. Use the read-only
+preview carefully before adding `--yes`. The desktop app provides the same
+flow under **Sender cleanup**, with a cohort hash and typed confirmation.
+
 ## Build & test
 
 ```bash
@@ -147,6 +174,8 @@ production use.
 - Dry-run by default
 - Trash, never permanently delete from `clean`
 - `--yes` gate before any state-changing command
+- `trash-sender` validates one exact address, previews first, and exact-matches
+  Gmail results locally before its separate `--yes` action
 - The planner refuses to delete a non-junk message even if a delete rule
   matches — explicit safety-check in `internal/engine/planner.go`
 - Local-only by default; no bodies ever loaded

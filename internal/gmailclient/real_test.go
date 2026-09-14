@@ -105,6 +105,46 @@ func TestRealClient_ListMessagesReportsFetchedMetadata(t *testing.T) {
 	}
 }
 
+func TestRealClient_ListMessagesIncludingSpamPaginatesSenderQuery(t *testing.T) {
+	sender := defang.MkEmail("notice", "example.com")
+	query := `from:"` + sender + `" -in:trash`
+	var listCalls int
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.URL.Path == "/gmail/v1/users/me/messages":
+			listCalls++
+			if r.URL.Query().Get("q") != query || r.URL.Query().Get("includeSpamTrash") != "true" {
+				t.Errorf("list query = %q, includeSpamTrash = %q", r.URL.Query().Get("q"), r.URL.Query().Get("includeSpamTrash"))
+			}
+			if r.URL.Query().Get("pageToken") == "next" {
+				_ = json.NewEncoder(w).Encode(map[string]any{"messages": []map[string]string{{"id": "m2"}}})
+				return
+			}
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"messages":      []map[string]string{{"id": "m1"}},
+				"nextPageToken": "next",
+			})
+		case strings.HasPrefix(r.URL.Path, "/gmail/v1/users/me/messages/m"):
+			id := path.Base(r.URL.Path)
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"id": id, "internalDate": "1700000000000",
+				"payload": map[string]any{"headers": []map[string]string{{"name": "From", "value": sender}}},
+			})
+		default:
+			http.Error(w, "unexpected request", http.StatusNotFound)
+		}
+	}))
+	defer server.Close()
+
+	messages, err := newHTTPTestClient(t, server).ListMessagesIncludingSpam(query, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if listCalls != 2 || len(messages) != 2 || messages[0].ID != "m1" || messages[1].ID != "m2" {
+		t.Fatalf("list calls = %d, messages = %+v", listCalls, messages)
+	}
+}
+
 func TestRealClient_TrashMessages_RetriesTransientErrors(t *testing.T) {
 	stubRetryDelay(t, func(int, error) time.Duration { return 0 })
 	var attempts atomic.Int32

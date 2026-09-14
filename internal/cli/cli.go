@@ -4,6 +4,7 @@
 //	auth.go      — login / logout                   (OAuth browser flow)
 //	pipeline.go  — scan / stats / dry-run / clean / purge / undo
 //	              as thin adapters over engine.Pipeline (undo-cache path only)
+//	sender_trash.go — exact-sender Gmail preview / Trash workflow
 //	insights.go  — sender / attachments / newsletters / receipts
 //	              + tui-selection.saveSelection
 //	meta.go      — rules / config / tui             (experimental TUI in meta.go)
@@ -59,6 +60,7 @@ func Build(stdout, stderr io.Writer) *cobra.Command {
 		newStatsCmd(stdout, stderr),
 		newDryRunCmd(stdout, stderr),
 		newCleanCmd(stdout, stderr),
+		newTrashSenderCmd(stdout, stderr),
 		newPurgeCmd(stdout, stderr),
 		newUndoCmd(stdout, stderr),
 		newRulesCmd(stdout, stderr),

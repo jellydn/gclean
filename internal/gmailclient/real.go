@@ -110,10 +110,21 @@ const (
 )
 
 func (r *RealClient) ListMessages(query string, max int) ([]*models.Message, error) {
+	return r.listMessages(query, max, false)
+}
+
+func (r *RealClient) ListMessagesIncludingSpam(query string, max int) ([]*models.Message, error) {
+	return r.listMessages(query, max, true)
+}
+
+func (r *RealClient) listMessages(query string, max int, includeSpamTrash bool) ([]*models.Message, error) {
 	var out []*models.Message
 	pageToken := ""
 	for {
 		listCall := r.service.Users.Messages.List("me").MaxResults(500).PageToken(pageToken)
+		if includeSpamTrash {
+			listCall.IncludeSpamTrash(true)
+		}
 		if query != "" {
 			listCall.Q(query)
 		}

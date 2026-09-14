@@ -13,9 +13,10 @@
       <a class="brand" href="#top" aria-label="gclean home"><span class="mark">g</span><span>gclean</span></a>
       <nav aria-label="Workflow">
         <a href="#overview" class="active"><span>01</span> Overview</a>
-        <a href="#review"><span>02</span> Review</a>
-        <a href="#safety"><span>03</span> Safety</a>
-        <a href="#settings"><span>04</span> Settings</a>
+        <a href="#sender-cleanup"><span>02</span> Sender cleanup</a>
+        <a href="#review"><span>03</span> Review</a>
+        <a href="#safety"><span>04</span> Safety</a>
+        <a href="#settings"><span>05</span> Settings</a>
       </nav>
       <div class="privacy"><span class="shield">◇</span><div><strong>Metadata only</strong><small>Message bodies never leave Gmail.</small></div></div>
     </aside>
@@ -37,6 +38,19 @@
         <div class="metric reclaim"><small>SAFE TO RECLAIM</small><strong id="reclaim">—</strong><span id="delete-count">Preview required</span></div>
         <div class="metric"><small>PROTECTED / KEPT</small><strong id="keep-count">—</strong><span>Contacts, recent & important</span></div>
         <div class="scan-card"><div><small>DISCOVER</small><h2>Refresh Gmail metadata</h2><p>Reads headers, labels, dates, and size estimates. It never downloads message bodies or changes Gmail.</p></div><button id="scan">Scan Gmail <span>→</span></button></div>
+      </section>
+
+      <section id="sender-cleanup" class="sender-cleanup">
+        <div><p class="eyebrow">EXACT SENDER</p><h2>Move all mail from one sender to Trash</h2><p>Enter one complete sender address. gclean uses Gmail search, then checks every returned From address for an exact match before it builds the preview. This direct tool includes starred, important, recent, and otherwise protected mail from that sender.</p></div>
+        <form id="sender-form">
+          <label for="sender-address">Sender address</label>
+          <div class="sender-input"><input id="sender-address" type="email" autocomplete="off" spellcheck="false" placeholder="notification@github.com" required><button id="preview-sender" type="submit">Preview mail</button></div>
+        </form>
+        <div id="sender-preview" class="sender-preview hidden" aria-live="polite">
+          <div><small>EXACT MATCH</small><strong id="sender-preview-address"></strong><code id="sender-preview-query"></code></div>
+          <div><small>MESSAGES</small><strong id="sender-preview-count">0</strong><span id="sender-preview-size">0 B estimated</span></div>
+          <button id="open-sender-trash" class="danger-soft" type="button">Review & move to Trash <span>→</span></button>
+        </div>
       </section>
 
       <section id="review" class="review">
