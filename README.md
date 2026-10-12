@@ -98,9 +98,9 @@ then exact-matches each normalized From address locally so Gmail's broader
 `from:` matching cannot expand the cohort.
 
 ```bash
-gclean trash-sender notification@github.com
+gclean trash-sender notifications@github.com
 # Review the exact-match count and size, then copy its --preview-id command.
-gclean trash-sender notification@github.com --preview-id <printed-id> --yes
+gclean trash-sender notifications@github.com --preview-id <printed-id> --yes
 gclean undo  # restores the last gclean Trash batch
 ```
 
@@ -115,6 +115,12 @@ This direct action intentionally includes starred, important, recent, and
 otherwise planner-protected mail from the exact sender. Use the read-only
 preview carefully before adding `--yes`. The desktop app provides the same
 flow under **Sender cleanup**, with a cohort hash and typed confirmation.
+
+To repeat GitHub plus other machine-notification senders (LinkedIn, Facebook,
+YouTube, dev-tool bots), see
+[Repeatable notification cleanup](docs/notification-cleanup.md). Preview with
+`./scripts/trash-notification-senders.sh`; add `--yes` after reviewing the
+counts.
 
 ## Build & test
 
