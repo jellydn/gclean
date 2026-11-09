@@ -1,10 +1,10 @@
 module gclean
 
-go 1.26.4
+go 1.26.7
 
 require (
 	charm.land/bubbletea/v2 v2.1.1
-	charm.land/lipgloss/v2 v2.0.6
+	charm.land/lipgloss/v2 v2.1.0
 	github.com/gofrs/flock v0.13.2
 	github.com/spf13/cobra v1.10.2
 	golang.org/x/oauth2 v0.37.0
